@@ -1,0 +1,15 @@
+{
+  "name": "bot-consultorio-mixteco",
+  "version": "1.0.0",
+  "description": "Asistente virtual de WhatsApp del consultorio del Dr. Marco A. Mixteco",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
