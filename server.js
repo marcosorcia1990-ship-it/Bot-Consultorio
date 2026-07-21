@@ -6,6 +6,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const { TOOLS, ejecutarHerramienta } = require("./tools");
 
 const app = express();
 app.use(express.json());
@@ -17,6 +18,10 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;        // Identificador del
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;         // Clave de la API de OpenAI
 const MODEL = process.env.MODEL || "gpt-4o-mini";
 const GRAPH_VERSION = process.env.GRAPH_VERSION || "v25.0";
+
+// Activa el agendado automático con Google Calendar (fase 2).
+// Ponlo en "true" en Render SOLO cuando ya configuraste CALENDAR_ID y GOOGLE_CREDENTIALS_JSON.
+const AGENDA_ACTIVA = process.env.AGENDA_ACTIVA === "true";
 
 // Números personales protegidos (el bot JAMÁS les responde).
 // Formato: últimos 10 dígitos, separados por comas. Ej: "2202355440,2717493381"
@@ -100,31 +105,51 @@ async function askAI(chat, userText) {
       ? "El consultorio está en horario hábil."
       : "Es FUERA del horario de atención: en respuestas que requieran acción humana, ajusta expectativas (ej. 'le confirmamos mañana por la mañana 🙏').");
 
-  // OpenAI usa un mensaje "system" al inicio + el historial
   const messages = [
     { role: "system", content: SYSTEM_PROMPT + runtimeContext },
     ...chat.history,
     { role: "user", content: userText }
   ];
 
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 600,
-      messages
-    })
-  });
+  // Cuerpo base de la petición; si la agenda está activa, se añaden las herramientas.
+  const bodyBase = { model: MODEL, max_tokens: 700, messages };
+  if (AGENDA_ACTIVA) bodyBase.tools = TOOLS;
 
-  if (!res.ok) {
-    throw new Error(`API de OpenAI respondió ${res.status}: ${await res.text()}`);
+  // Ciclo de function calling: la IA puede pedir herramientas hasta 5 veces por turno.
+  for (let vuelta = 0; vuelta < 5; vuelta++) {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(bodyBase)
+    });
+
+    if (!res.ok) {
+      throw new Error(`API de OpenAI respondió ${res.status}: ${await res.text()}`);
+    }
+    const data = await res.json();
+    const msg = data.choices?.[0]?.message;
+    if (!msg) return "";
+
+    // ¿La IA quiere usar una herramienta?
+    if (msg.tool_calls && msg.tool_calls.length) {
+      messages.push(msg); // registrar la petición de herramienta
+      for (const tc of msg.tool_calls) {
+        let args = {};
+        try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
+        const resultado = await ejecutarHerramienta(tc.function.name, args);
+        console.log(`🔧 Herramienta ${tc.function.name}:`, tc.function.arguments, "->", resultado.slice(0, 200));
+        messages.push({ role: "tool", tool_call_id: tc.id, content: resultado });
+      }
+      continue; // volver a preguntar a la IA con el resultado de la herramienta
+    }
+
+    // Respuesta final de texto
+    return (msg.content || "").trim();
   }
-  const data = await res.json();
-  return (data.choices?.[0]?.message?.content || "").trim();
+  return "En breve le confirmamos por este medio 🙏"; // salvaguarda si algo se cicla
 }
 
 // ---------- Lógica principal por mensaje ----------
