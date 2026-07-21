@@ -55,6 +55,14 @@ function nowInCordoba() {
 }
 
 async function sendWhatsAppText(to, body) {
+  // Fix para números mexicanos: WhatsApp entrega el número como 521XXXXXXXXXX
+  // pero la API lo espera como 52XXXXXXXXXX (sin el "1" extra tras la lada 52).
+  // Sin esto, los envíos a México fallan con error 131030.
+  let dest = String(to);
+  if (dest.startsWith("521") && dest.length === 13) {
+    dest = "52" + dest.slice(3);
+  }
+
   const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
   const res = await fetch(url, {
     method: "POST",
@@ -64,7 +72,7 @@ async function sendWhatsAppText(to, body) {
     },
     body: JSON.stringify({
       messaging_product: "whatsapp",
-      to,
+      to: dest,
       type: "text",
       text: { body, preview_url: true }
     })
