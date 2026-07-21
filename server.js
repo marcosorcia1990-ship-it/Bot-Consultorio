@@ -14,8 +14,8 @@ app.use(express.json());
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;          // Token de acceso de Meta
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;              // Palabra secreta que tú inventas
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;        // Identificador del número (de Meta)
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;    // Clave de la API de Claude
-const MODEL = process.env.MODEL || "claude-sonnet-4-6";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;         // Clave de la API de OpenAI
+const MODEL = process.env.MODEL || "gpt-4o-mini";
 const GRAPH_VERSION = process.env.GRAPH_VERSION || "v25.0";
 
 // Números personales protegidos (el bot JAMÁS les responde).
@@ -84,7 +84,7 @@ async function alertTeam(text) {
   }
 }
 
-async function askClaude(chat, userText) {
+async function askAI(chat, userText) {
   const { fecha, abierto } = nowInCordoba();
   const runtimeContext =
     `\n\n---\nContexto en tiempo real: hoy es ${fecha} (hora de Córdoba, Veracruz). ` +
@@ -92,28 +92,31 @@ async function askClaude(chat, userText) {
       ? "El consultorio está en horario hábil."
       : "Es FUERA del horario de atención: en respuestas que requieran acción humana, ajusta expectativas (ej. 'le confirmamos mañana por la mañana 🙏').");
 
-  const messages = [...chat.history, { role: "user", content: userText }];
+  // OpenAI usa un mensaje "system" al inicio + el historial
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT + runtimeContext },
+    ...chat.history,
+    { role: "user", content: userText }
+  ];
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 600,
-      system: SYSTEM_PROMPT + runtimeContext,
       messages
     })
   });
 
   if (!res.ok) {
-    throw new Error(`API de Claude respondió ${res.status}: ${await res.text()}`);
+    throw new Error(`API de OpenAI respondió ${res.status}: ${await res.text()}`);
   }
   const data = await res.json();
-  return (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n").trim();
+  return (data.choices?.[0]?.message?.content || "").trim();
 }
 
 // ---------- Lógica principal por mensaje ----------
@@ -176,10 +179,10 @@ async function processMessage(msg, value) {
   // ---- Consultar a la IA ----
   let reply;
   try {
-    reply = await askClaude(chat, userText);
+    reply = await askAI(chat, userText);
   } catch (e) {
     // Regla de oro: ante cualquier falla, mejor silencio que una respuesta rota
-    console.error("Error consultando a Claude:", e.message);
+    console.error("Error consultando a la IA:", e.message);
     return;
   }
 
@@ -263,7 +266,7 @@ app.get("/", (req, res) => res.send("Bot del consultorio: en línea ✅"));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🩺 Bot del consultorio escuchando en el puerto ${PORT}`);
-  const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "ANTHROPIC_API_KEY"]
+  const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
   if (faltantes.length) console.warn("⚠️ Faltan variables de entorno:", faltantes.join(", "));
 });
