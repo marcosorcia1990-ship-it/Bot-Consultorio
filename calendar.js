@@ -5,7 +5,11 @@
 
 const { google } = require("googleapis");
 
-const CALENDAR_ID = process.env.CALENDAR_ID;           // ej. internista.marco@gmail.com
+const CALENDAR_ID = process.env.CALENDAR_ID;           // Calendario donde se CREAN las citas
+// Calendarios que se REVISAN para detectar horarios ocupados (separados por comas).
+// Debe incluir todos los calendarios donde puedan existir citas o compromisos.
+const CALENDARS_BUSY = (process.env.CALENDARS_BUSY || process.env.CALENDAR_ID || "")
+  .split(",").map(c => c.trim()).filter(Boolean);
 const TIMEZONE = "America/Mexico_City";
 const SLOT_STEP_MIN = 30;                              // resolución de la rejilla de horarios
 
@@ -95,29 +99,57 @@ function dayOfWeekMX(date) {
 }
 
 // ---------- Disponibilidad ----------
-// Devuelve lista de {start: Date, label: string} con huecos libres para una duración dada.
-async function buscarHorarios(duracionMin, diasVista = 14, maxOpciones = 3) {
+// filtros: { fechaDeseada: "YYYY-MM-DD", desdeHora: "HH:MM", hastaHora: "HH:MM" }
+async function buscarHorarios(duracionMin, diasVista = 14, maxOpciones = 3, filtros = {}) {
   const cal = initCalendar();
   const ahora = new Date();
   const finVentana = new Date(ahora.getTime() + diasVista * 24 * 60 * 60 * 1000);
 
-  // Traer eventos existentes en la ventana (para saber qué está ocupado)
-  const { data } = await cal.events.list({
-    calendarId: CALENDAR_ID,
-    timeMin: ahora.toISOString(),
-    timeMax: finVentana.toISOString(),
-    singleEvents: true,
-    orderBy: "startTime",
-    maxResults: 2500
-  });
-  const ocupados = (data.items || [])
-    .filter(e => e.start && e.start.dateTime) // ignorar eventos de día completo
-    .map(e => ({ ini: new Date(e.start.dateTime), fin: new Date(e.end.dateTime) }));
+  // Consultar ocupación en TODOS los calendarios configurados (freebusy)
+  let ocupados = [];
+  try {
+    const fb = await cal.freebusy.query({
+      requestBody: {
+        timeMin: ahora.toISOString(),
+        timeMax: finVentana.toISOString(),
+        timeZone: TIMEZONE,
+        items: CALENDARS_BUSY.map(id => ({ id }))
+      }
+    });
+    const cals = fb.data.calendars || {};
+    for (const [id, info] of Object.entries(cals)) {
+      if (info.errors && info.errors.length) {
+        console.warn(`⚠️ No se pudo leer el calendario "${id}":`, JSON.stringify(info.errors));
+        continue;
+      }
+      for (const b of (info.busy || [])) {
+        ocupados.push({ ini: new Date(b.start), fin: new Date(b.end) });
+      }
+    }
+    console.log(`🗓️  Revisando ${CALENDARS_BUSY.length} calendario(s); ${ocupados.length} bloques ocupados encontrados`);
+  } catch (e) {
+    // Si freebusy falla, no arriesgamos empalmes: mejor no ofrecer horarios.
+    console.error("Error consultando disponibilidad:", e.message);
+    throw e;
+  }
+
+  // Convertir filtros de hora a minutos desde medianoche
+  const aMinutos = (hhmm) => {
+    const m = String(hhmm || "").match(/^(\d{1,2}):(\d{2})$/);
+    return m ? (+m[1]) * 60 + (+m[2]) : null;
+  };
+  const desdeMin = aMinutos(filtros.desdeHora);
+  const hastaMin = aMinutos(filtros.hastaHora);
 
   const libres = [];
-  for (let d = 0; d < diasVista && libres.length < maxOpciones * 4; d++) {
+  for (let d = 0; d < diasVista; d++) {
     const dia = new Date(ahora.getTime() + d * 24 * 60 * 60 * 1000);
     const p = partsInTZ(dia);
+    const fechaISO = `${p.year}-${p.month}-${p.day}`;
+
+    // Filtro por fecha específica solicitada
+    if (filtros.fechaDeseada && filtros.fechaDeseada !== fechaISO) continue;
+
     const dow = dayOfWeekMX(dia);
     const rangos = RANGOS[dow] || [];
 
@@ -128,35 +160,48 @@ async function buscarHorarios(duracionMin, diasVista = 14, maxOpciones = 3) {
       while (cursor.getTime() + duracionMin * 60000 <= finRango.getTime() + 1) {
         const slotIni = cursor;
         const slotFin = new Date(cursor.getTime() + duracionMin * 60000);
+        const pc = partsInTZ(slotIni);
+        const minutoDelDia = (+pc.hour) * 60 + (+pc.minute);
 
         const suficienteAnticipacion = slotIni.getTime() - ahora.getTime() >= MIN_ANTICIPACION_MS;
         const chocaConAlgo = ocupados.some(o => slotIni < o.fin && slotFin > o.ini);
+        const cumpleDesde = desdeMin === null || minutoDelDia >= desdeMin;
+        const cumpleHasta = hastaMin === null || minutoDelDia < hastaMin;
 
-        if (suficienteAnticipacion && !chocaConAlgo) {
-          libres.push({ start: new Date(slotIni), label: etiquetaHora(slotIni) });
+        if (suficienteAnticipacion && !chocaConAlgo && cumpleDesde && cumpleHasta) {
+          libres.push({ start: new Date(slotIni), label: etiquetaHora(slotIni), fecha: fechaISO });
         }
         cursor = new Date(cursor.getTime() + SLOT_STEP_MIN * 60000);
       }
     }
   }
 
-  // Repartir opciones en días distintos para no ofrecer 3 horas del mismo día
-  const porDia = {};
+  // Si se pidió una fecha específica, devolver varias opciones de ese día.
+  // Si no, repartir entre días (hasta 2 por día) para dar variedad sin abrumar.
   const resultado = [];
-  for (const l of libres) {
-    const clave = l.label.split(" ").slice(0, 3).join(" ");
-    porDia[clave] = (porDia[clave] || 0) + 1;
-    if (porDia[clave] <= 1) resultado.push(l);
-    if (resultado.length >= maxOpciones) break;
-  }
-  // Si no se llenó, completar con lo que haya
-  if (resultado.length < maxOpciones) {
+  if (filtros.fechaDeseada) {
+    resultado.push(...libres.slice(0, Math.max(maxOpciones, 6)));
+  } else {
+    const porDia = {};
     for (const l of libres) {
-      if (!resultado.includes(l)) resultado.push(l);
+      porDia[l.fecha] = (porDia[l.fecha] || 0) + 1;
+      if (porDia[l.fecha] <= 2) resultado.push(l);
       if (resultado.length >= maxOpciones) break;
+    }
+    if (resultado.length < maxOpciones) {
+      for (const l of libres) {
+        if (!resultado.includes(l)) resultado.push(l);
+        if (resultado.length >= maxOpciones) break;
+      }
     }
   }
   return resultado;
+}
+
+// Texto legible de los horarios de atención (para que el bot los explique correctamente)
+function textoHorarioAtencion() {
+  return "Lunes, miércoles y viernes de 11:00 a 15:00 y de 18:00 a 19:30. " +
+         "Martes, jueves y sábado de 09:30 a 14:30. Domingo no hay consulta.";
 }
 
 function etiquetaHora(date) {
@@ -215,14 +260,17 @@ async function crearCita({ nombre, telefono, tipo, primeraVez, startISO, duracio
     return { ok: false, motivo: "muy_pronto" };
   }
 
-  // Verificación final anti-choque (por si alguien agendó en el ínterin)
-  const { data } = await cal.events.list({
-    calendarId: CALENDAR_ID,
-    timeMin: start.toISOString(),
-    timeMax: end.toISOString(),
-    singleEvents: true
+  // Verificación final anti-choque en TODOS los calendarios (por si algo se ocupó en el ínterin)
+  const fbCheck = await cal.freebusy.query({
+    requestBody: {
+      timeMin: start.toISOString(),
+      timeMax: end.toISOString(),
+      timeZone: TIMEZONE,
+      items: CALENDARS_BUSY.map(id => ({ id }))
+    }
   });
-  const choca = (data.items || []).some(e => e.start && e.start.dateTime);
+  const choca = Object.values(fbCheck.data.calendars || {})
+    .some(c => (c.busy || []).length > 0);
   if (choca) return { ok: false, motivo: "ocupado" };
 
   const evento = {
@@ -252,4 +300,4 @@ async function actualizarEstadoCita(eventId, estado) {
   return { ok: true };
 }
 
-module.exports = { buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar };
+module.exports = { buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar, textoHorarioAtencion };
