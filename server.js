@@ -158,6 +158,9 @@ async function processMessage(msg, value) {
   const chat = getChat(from);
   const now = Date.now();
 
+  const vistaPrevia = msg.type === "text" ? String(msg.text?.body || "").slice(0, 80) : `(${msg.type})`;
+  console.log(`📩 Mensaje de +${from}: ${vistaPrevia}`);
+
   // Regla: números personales protegidos → silencio total
   if (PERSONAL_NUMBERS.includes(String(from).slice(-10))) {
     console.log(`(silencio) Número protegido: ${from}`);
@@ -233,6 +236,7 @@ async function processMessage(msg, value) {
   }
 
   // ---- Responder ----
+  console.log(`💬 Respondiendo a +${from}: ${reply.slice(0, 80)}`);
   await sendWhatsAppText(from, reply);
   chat.history.push({ role: "user", content: userText }, { role: "assistant", content: reply });
   trimHistory(chat);
