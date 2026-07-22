@@ -166,11 +166,54 @@ function etiquetaHora(date) {
   }).format(date);
 }
 
+// Valida que un horario propuesto caiga COMPLETO dentro de los rangos de atención.
+// Salvaguarda crítica: impide crear citas de madrugada o fuera de horario por errores de zona horaria.
+function estaDentroDeRango(start, duracionMin) {
+  const p = partsInTZ(start);
+  const dow = dayOfWeekMX(start);
+  const rangos = RANGOS[dow] || [];
+  const fin = new Date(start.getTime() + duracionMin * 60000);
+
+  for (const [h1, m1, h2, m2] of rangos) {
+    const ini = mxDate(+p.year, +p.month, +p.day, h1, m1);
+    const finR = mxDate(+p.year, +p.month, +p.day, h2, m2);
+    if (start >= ini && fin <= new Date(finR.getTime() + 1000)) return true;
+  }
+  return false;
+}
+
 // ---------- Crear cita ----------
+// Convierte el texto de fecha recibido en un Date correcto.
+// Si llega "2026-07-23T09:30:00" (sin Z ni offset), se interpreta como hora de MÉXICO,
+// no como UTC. Sin esto, las citas se crean con 6 horas de desfase.
+function parseFechaMX(texto) {
+  const s = String(texto).trim();
+  const tieneZona = /Z$|[+-]\d{2}:?\d{2}$/.test(s);
+  if (tieneZona) return new Date(s);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!m) return new Date(s);
+  return mxDate(+m[1], +m[2], +m[3], +m[4], +m[5]);
+}
+
 async function crearCita({ nombre, telefono, tipo, primeraVez, startISO, duracionMin }) {
   const cal = initCalendar();
-  const start = new Date(startISO);
+  const start = parseFechaMX(startISO);
   const end = new Date(start.getTime() + duracionMin * 60000);
+
+  if (isNaN(start.getTime())) {
+    return { ok: false, motivo: "fecha_invalida" };
+  }
+
+  // SALVAGUARDA 1: nunca crear citas fuera del horario de atención
+  if (!estaDentroDeRango(start, duracionMin)) {
+    console.error(`⛔ Intento de cita fuera de horario: ${start.toISOString()} (${etiquetaHora(start)})`);
+    return { ok: false, motivo: "fuera_de_horario" };
+  }
+
+  // SALVAGUARDA 2: respetar la anticipación mínima
+  if (start.getTime() - Date.now() < MIN_ANTICIPACION_MS) {
+    return { ok: false, motivo: "muy_pronto" };
+  }
 
   // Verificación final anti-choque (por si alguien agendó en el ínterin)
   const { data } = await cal.events.list({
