@@ -17,7 +17,7 @@ const TOOLS = [
         properties: {
           primera_vez: {
             type: "boolean",
-            description: "true si es primera consulta (dura 60 min), false si es subsecuente/seguimiento (dura 30 min)."
+            description: "true si es su primera consulta con el doctor, false si es paciente de seguimiento. Todas las citas duran 30 minutos; este dato solo se registra en el evento."
           },
           preferencia: {
             type: "string",
@@ -39,7 +39,7 @@ const TOOLS = [
           nombre: { type: "string", description: "Nombre completo del paciente." },
           telefono: { type: "string", description: "Teléfono de contacto del paciente." },
           tipo: { type: "string", enum: ["consulta", "valoración preoperatoria"], description: "Tipo de cita." },
-          primera_vez: { type: "boolean", description: "true=primera vez (60min), false=subsecuente (30min)." },
+          primera_vez: { type: "boolean", description: "true si es primera vez, false si es subsecuente. Sirve para el registro de la cita." },
           start_iso: { type: "string", description: "El campo 'start_iso' EXACTO del horario que el paciente eligió (te lo dio buscar_horarios). No lo inventes ni lo modifiques." }
         },
         required: ["nombre", "telefono", "tipo", "primera_vez", "start_iso"]
@@ -52,7 +52,7 @@ const TOOLS = [
 async function ejecutarHerramienta(nombre, args) {
   try {
     if (nombre === "buscar_horarios") {
-      const dur = args.primera_vez ? 60 : 30;
+      const dur = 30; // Todas las citas duran 30 minutos
       const opciones = await cal.buscarHorarios(dur, 14, 3);
       if (!opciones.length) {
         return JSON.stringify({
@@ -67,7 +67,7 @@ async function ejecutarHerramienta(nombre, args) {
     }
 
     if (nombre === "crear_cita") {
-      const dur = args.primera_vez ? 60 : 30;
+      const dur = 30; // Todas las citas duran 30 minutos
       const r = await cal.crearCita({
         nombre: args.nombre,
         telefono: args.telefono,
