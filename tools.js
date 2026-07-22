@@ -76,8 +76,14 @@ async function ejecutarHerramienta(nombre, args) {
         startISO: args.start_iso,
         duracionMin: dur
       });
-      if (!r.ok && r.motivo === "ocupado") {
-        return JSON.stringify({ ok: false, motivo: "ocupado", mensaje: "Ese horario acaba de ocuparse. Ofrece buscar otro." });
+      if (!r.ok) {
+        const mensajes = {
+          ocupado: "Ese horario acaba de ocuparse. Discúlpate y llama a buscar_horarios de nuevo para ofrecer otras opciones.",
+          fuera_de_horario: "Ese horario NO está dentro del horario de atención del consultorio. NO insistas: llama a buscar_horarios y ofrece solo las opciones que devuelva.",
+          muy_pronto: "Ese horario ya pasó o es demasiado próximo (se requiere al menos 1 hora de anticipación). Llama a buscar_horarios para ofrecer opciones válidas.",
+          fecha_invalida: "La fecha enviada no es válida. Llama a buscar_horarios y usa EXACTAMENTE el campo start_iso que devuelva."
+        };
+        return JSON.stringify({ ok: false, motivo: r.motivo, mensaje: mensajes[r.motivo] || "No se pudo crear la cita." });
       }
       return JSON.stringify({ ok: true, event_id: r.eventId, cuando: r.cuando });
     }
