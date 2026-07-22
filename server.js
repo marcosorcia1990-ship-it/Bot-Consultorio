@@ -303,6 +303,7 @@ app.get("/", (req, res) => res.send("Bot del consultorio: en línea ✅"));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🩺 Bot del consultorio escuchando en el puerto ${PORT}`);
+  console.log(`⚙️  Modelo: ${MODEL} | Agenda automática: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0}`);
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
   if (faltantes.length) console.warn("⚠️ Faltan variables de entorno:", faltantes.join(", "));
