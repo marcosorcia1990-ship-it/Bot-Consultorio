@@ -11,7 +11,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "buscar_horarios",
-      description: "Consulta el calendario real y devuelve horarios LIBRES para agendar. Úsalo cuando el paciente quiere agendar y ya sabes si es primera vez o subsecuente. NUNCA inventes horarios: usa solo los que devuelve esta función.",
+      description: "Consulta el calendario real y devuelve horarios LIBRES para agendar. Úsalo SIEMPRE que el paciente quiera agendar o pregunte por disponibilidad, incluso si ya lo llamaste antes y el paciente pidió otro día u otra hora. NUNCA ofrezcas un horario que no venga de esta función.",
       parameters: {
         type: "object",
         properties: {
@@ -19,9 +19,17 @@ const TOOLS = [
             type: "boolean",
             description: "true si es su primera consulta con el doctor, false si es paciente de seguimiento. Todas las citas duran 30 minutos; este dato solo se registra en el evento."
           },
-          preferencia: {
+          fecha_deseada: {
             type: "string",
-            description: "Opcional. Preferencia del paciente en texto libre, ej. 'el jueves', 'por la tarde', 'la próxima semana'. Déjalo vacío si no expresó preferencia."
+            description: "Opcional. Fecha específica que pidió el paciente, en formato YYYY-MM-DD. Úsalo cuando diga 'el jueves', 'mañana', 'el 25', etc. Calcúlala a partir de la fecha de hoy que aparece en el contexto."
+          },
+          desde_hora: {
+            type: "string",
+            description: "Opcional. Hora mínima solicitada en formato 24h 'HH:MM'. Ej: si pide 'después de las 5 de la tarde' usa '17:00'; si pide 'por la tarde' usa '14:00'."
+          },
+          hasta_hora: {
+            type: "string",
+            description: "Opcional. Hora máxima solicitada en formato 24h 'HH:MM'. Ej: si pide 'por la mañana' usa '12:00'; si pide 'antes de las 2' usa '14:00'."
           }
         },
         required: ["primera_vez"]
@@ -53,15 +61,28 @@ async function ejecutarHerramienta(nombre, args) {
   try {
     if (nombre === "buscar_horarios") {
       const dur = 30; // Todas las citas duran 30 minutos
-      const opciones = await cal.buscarHorarios(dur, 14, 3);
+      const filtros = {
+        fechaDeseada: args.fecha_deseada || null,
+        desdeHora: args.desde_hora || null,
+        hastaHora: args.hasta_hora || null
+      };
+      const opciones = await cal.buscarHorarios(dur, 14, 6, filtros);
+
       if (!opciones.length) {
+        // Buscar sin filtros para poder ofrecer alternativas reales
+        const alternativas = await cal.buscarHorarios(dur, 14, 6, {});
         return JSON.stringify({
-          ok: true, hay_horarios: false,
-          mensaje: "No hay horarios libres en los próximos días dentro del horario de atención."
+          ok: true,
+          hay_horarios: false,
+          mensaje: "No hay horarios libres que coincidan con lo que pidió el paciente. Explícale cuál es el horario de atención real y ofrécele las alternativas que se incluyen aquí. NO inventes horarios.",
+          horario_atencion: cal.textoHorarioAtencion(),
+          alternativas: alternativas.map(o => ({ start_iso: o.start.toISOString(), texto: o.label }))
         });
       }
+
       return JSON.stringify({
         ok: true, hay_horarios: true, duracion_min: dur,
+        horario_atencion: cal.textoHorarioAtencion(),
         opciones: opciones.map(o => ({ start_iso: o.start.toISOString(), texto: o.label }))
       });
     }
