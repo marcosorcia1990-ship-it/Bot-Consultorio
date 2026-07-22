@@ -21,7 +21,8 @@ const GRAPH_VERSION = process.env.GRAPH_VERSION || "v25.0";
 
 // Activa el agendado automático con Google Calendar (fase 2).
 // Ponlo en "true" en Render SOLO cuando ya configuraste CALENDAR_ID y GOOGLE_CREDENTIALS_JSON.
-const AGENDA_ACTIVA = process.env.AGENDA_ACTIVA === "true";
+// Se aceptan variantes con espacios o mayúsculas (TRUE, " true ", etc.)
+const AGENDA_ACTIVA = String(process.env.AGENDA_ACTIVA || "").trim().toLowerCase() === "true";
 
 // Números personales protegidos (el bot JAMÁS les responde).
 // Formato: últimos 10 dígitos, separados por comas. Ej: "2202355440,2717493381"
@@ -303,7 +304,7 @@ app.get("/", (req, res) => res.send("Bot del consultorio: en línea ✅"));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🩺 Bot del consultorio escuchando en el puerto ${PORT}`);
-  console.log(`⚙️  Modelo: ${MODEL} | Agenda automática: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0}`);
+  console.log(`⚙️  Modelo: ${MODEL} | Agenda automática: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | AGENDA_ACTIVA recibida: "${process.env.AGENDA_ACTIVA}"`);
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
   if (faltantes.length) console.warn("⚠️ Faltan variables de entorno:", faltantes.join(", "));
