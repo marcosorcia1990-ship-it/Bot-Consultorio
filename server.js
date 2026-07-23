@@ -165,7 +165,7 @@ async function alertTeam(text) {
   }
 }
 
-async function askAI(chat, userText) {
+async function askAI(chat, userText, telefonoPaciente = null) {
   const { fecha, abierto } = nowInCordoba();
   const runtimeContext =
     `\n\n---\nContexto en tiempo real: hoy es ${fecha} (hora de Córdoba, Veracruz). ` +
@@ -207,7 +207,7 @@ async function askAI(chat, userText) {
       for (const tc of msg.tool_calls) {
         let args = {};
         try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
-        const resultado = await ejecutarHerramienta(tc.function.name, args);
+        const resultado = await ejecutarHerramienta(tc.function.name, args, telefonoPaciente);
         console.log(`🔧 Herramienta ${tc.function.name}:`, tc.function.arguments, "->", resultado.slice(0, 200));
         messages.push({ role: "tool", tool_call_id: tc.id, content: resultado });
       }
@@ -336,7 +336,7 @@ async function processMessage(msg, value) {
   // ---- Consultar a la IA ----
   let reply;
   try {
-    reply = await askAI(chat, userText);
+    reply = await askAI(chat, userText, from);
   } catch (e) {
     // Regla de oro: ante cualquier falla, mejor silencio que una respuesta rota
     console.error("Error consultando a la IA:", e.message);
