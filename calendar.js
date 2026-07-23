@@ -281,23 +281,104 @@ async function crearCita({ nombre, telefono, tipo, primeraVez, startISO, duracio
     start: { dateTime: start.toISOString(), timeZone: TIMEZONE },
     end: { dateTime: end.toISOString(), timeZone: TIMEZONE },
     colorId: COLOR.NUEVA,
-    extendedProperties: { private: { creadoPor: BOT_TAG, telefono, estado: "nueva" } }
+    extendedProperties: { private: { creadoPor: BOT_TAG, telefono, nombre, estado: "nueva" } }
   };
 
   const res = await cal.events.insert({ calendarId: CALENDAR_ID, requestBody: evento });
   return { ok: true, eventId: res.data.id, cuando: etiquetaHora(start) };
 }
 
-// ---------- Cambiar color según estado (para recordatorios fase 2) ----------
-async function actualizarEstadoCita(eventId, estado) {
+// ---------- Funciones para el módulo de recordatorios ----------
+
+// Lista las citas creadas por el bot en un rango de tiempo.
+// Devuelve solo las que tienen teléfono registrado (las que el bot puede contactar).
+async function listarCitasDelBot(desde, hasta) {
   const cal = initCalendar();
-  const colorId = COLOR[estado] || COLOR.NUEVA;
+  const { data } = await cal.events.list({
+    calendarId: CALENDAR_ID,
+    timeMin: desde.toISOString(),
+    timeMax: hasta.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+    maxResults: 250,
+    privateExtendedProperty: `creadoPor=${BOT_TAG}`
+  });
+  return (data.items || [])
+    .filter(e => e.start && e.start.dateTime)
+    .map(e => {
+      const priv = (e.extendedProperties && e.extendedProperties.private) || {};
+      return {
+        id: e.id,
+        titulo: e.summary || "",
+        inicio: new Date(e.start.dateTime),
+        cuando: etiquetaHora(new Date(e.start.dateTime)),
+        telefono: priv.telefono || "",
+        estado: priv.estado || "nueva",
+        confirmacionEnviada: priv.confirmacionEnviada === "si",
+        recordatorioEnviado: priv.recordatorioEnviado === "si",
+        resenaEnviada: priv.resenaEnviada === "si",
+        nombre: (priv.nombre || (e.summary || "").replace(/^Consulta – /, "").replace(/\s*\(.*\)$/, "")).trim()
+      };
+    })
+    .filter(c => c.telefono);
+}
+
+// Marca una bandera en la cita (confirmacionEnviada, recordatorioEnviado, resenaEnviada).
+// Lee primero las propiedades existentes para NO borrar las demás banderas:
+// perder una bandera significaría reenviar mensajes al paciente.
+async function marcarEnCita(eventId, campos) {
+  const cal = initCalendar();
+  const { data } = await cal.events.get({ calendarId: CALENDAR_ID, eventId });
+  const priv = (data.extendedProperties && data.extendedProperties.private) || {};
   await cal.events.patch({
     calendarId: CALENDAR_ID,
     eventId,
-    requestBody: { colorId, extendedProperties: { private: { estado } } }
+    requestBody: { extendedProperties: { private: { ...priv, ...campos } } }
+  });
+}
+
+// Busca la cita más próxima de un teléfono (para asociar respuestas de botones)
+async function buscarCitaPorTelefono(telefono) {
+  const ahora = new Date();
+  const hasta = new Date(ahora.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const citas = await listarCitasDelBot(ahora, hasta);
+  const ultimos10 = String(telefono).slice(-10);
+  return citas.find(c => String(c.telefono).replace(/\D/g, "").slice(-10) === ultimos10) || null;
+}
+
+// Cancela una cita: la marca en rojo y libera el horario
+async function cancelarCita(eventId) {
+  const cal = initCalendar();
+  await cal.events.patch({
+    calendarId: CALENDAR_ID,
+    eventId,
+    requestBody: {
+      colorId: COLOR.CANCELADA,
+      summary: undefined,
+      transparency: "transparent", // libera el horario: deja de contar como ocupado
+      extendedProperties: { private: { estado: "cancelada" } }
+    }
+  });
+}
+
+
+async function actualizarEstadoCita(eventId, estado) {
+  const cal = initCalendar();
+  const colorId = COLOR[estado] || COLOR.NUEVA;
+  const { data } = await cal.events.get({ calendarId: CALENDAR_ID, eventId });
+  const priv = (data.extendedProperties && data.extendedProperties.private) || {};
+  await cal.events.patch({
+    calendarId: CALENDAR_ID,
+    eventId,
+    requestBody: {
+      colorId,
+      extendedProperties: { private: { ...priv, estado: String(estado).toLowerCase() } }
+    }
   });
   return { ok: true };
 }
 
-module.exports = { buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar, textoHorarioAtencion };
+module.exports = {
+  buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar, textoHorarioAtencion,
+  listarCitasDelBot, marcarEnCita, buscarCitaPorTelefono, cancelarCita
+};
