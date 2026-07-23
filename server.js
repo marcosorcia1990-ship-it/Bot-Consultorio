@@ -446,7 +446,4 @@ app.listen(PORT, () => {
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
   if (faltantes.length) console.warn("⚠️ Faltan variables de entorno:", faltantes.join(", "));
-
-  // Programador de recordatorios (confirmaciones, recordatorios del día y reseñas)
-  recordatorios.iniciarProgramador(sendWhatsAppTemplate);
 });
