@@ -53,11 +53,44 @@ const TOOLS = [
         required: ["nombre", "telefono", "tipo", "primera_vez", "start_iso"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "consultar_mi_cita",
+      description: "Consulta si este paciente ya tiene una cita agendada próximamente. Úsalo SIEMPRE antes de reagendar o cancelar, y también cuando el paciente pregunte '¿cuándo es mi cita?' o '¿a qué hora tengo que venir?'.",
+      parameters: { type: "object", properties: {}, required: [] }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "reagendar_cita",
+      description: "Mueve la cita existente del paciente a un nuevo horario. Úsalo cuando pida cambiar, mover, posponer o reprogramar su cita. NO uses crear_cita para esto: crearía una cita duplicada y dejaría el horario anterior ocupado. Antes de llamar aquí, usa consultar_mi_cita para verificar que tiene cita, y buscar_horarios para ofrecerle opciones reales.",
+      parameters: {
+        type: "object",
+        properties: {
+          nuevo_start_iso: {
+            type: "string",
+            description: "El campo start_iso EXACTO del nuevo horario que el paciente eligió de la lista que devolvió buscar_horarios."
+          }
+        },
+        required: ["nuevo_start_iso"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancelar_cita",
+      description: "Cancela la cita del paciente y libera el horario para otros pacientes. Úsalo solo cuando el paciente diga claramente que ya no podrá asistir y NO quiera reagendar en ese momento. Si quiere cambiarla de fecha, usa reagendar_cita en su lugar.",
+      parameters: { type: "object", properties: {}, required: [] }
+    }
   }
 ];
 
 // Ejecuta la herramienta que la IA pidió y devuelve el resultado (string JSON)
-async function ejecutarHerramienta(nombre, args) {
+async function ejecutarHerramienta(nombre, args, telefonoPaciente = null) {
   try {
     if (nombre === "buscar_horarios") {
       const dur = 30; // Todas las citas duran 30 minutos
@@ -107,6 +140,51 @@ async function ejecutarHerramienta(nombre, args) {
         return JSON.stringify({ ok: false, motivo: r.motivo, mensaje: mensajes[r.motivo] || "No se pudo crear la cita." });
       }
       return JSON.stringify({ ok: true, event_id: r.eventId, cuando: r.cuando });
+    }
+
+    if (nombre === "consultar_mi_cita") {
+      if (!telefonoPaciente) return JSON.stringify({ ok: false, error: "No se pudo identificar el número del paciente." });
+      const cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+      if (!cita) {
+        return JSON.stringify({ ok: true, tiene_cita: false, mensaje: "Este paciente no tiene ninguna cita próxima registrada." });
+      }
+      return JSON.stringify({
+        ok: true, tiene_cita: true, cuando: cita.cuando, nombre: cita.nombre,
+        estado: cita.estado, veces_reagendada: cita.reagendos || 0
+      });
+    }
+
+    if (nombre === "reagendar_cita") {
+      if (!telefonoPaciente) return JSON.stringify({ ok: false, error: "No se pudo identificar el número del paciente." });
+      const cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+      if (!cita) {
+        return JSON.stringify({ ok: false, motivo: "sin_cita", mensaje: "No tiene una cita registrada que se pueda mover. Ofrécele agendar una nueva con buscar_horarios y crear_cita." });
+      }
+      const anterior = cita.cuando;
+      const r = await cal.reagendarCita(cita.id, args.nuevo_start_iso, 30);
+      if (!r.ok) {
+        const mensajes = {
+          ocupado: "Ese horario acaba de ocuparse. Llama a buscar_horarios y ofrece otras opciones.",
+          fuera_de_horario: "Ese horario NO está dentro del horario de atención. Llama a buscar_horarios y ofrece solo lo que devuelva.",
+          muy_pronto: "Ese horario ya pasó o es demasiado próximo (se requiere 1 hora de anticipación).",
+          fecha_invalida: "La fecha no es válida. Usa EXACTAMENTE el start_iso que devolvió buscar_horarios."
+        };
+        return JSON.stringify({ ok: false, motivo: r.motivo, mensaje: mensajes[r.motivo] || "No se pudo mover la cita." });
+      }
+      return JSON.stringify({
+        ok: true, anterior, nueva: r.cuando, veces_reagendada: r.veces,
+        aviso_equipo: r.veces >= 3 ? "Esta cita ya se ha reprogramado 3 o más veces." : null
+      });
+    }
+
+    if (nombre === "cancelar_cita") {
+      if (!telefonoPaciente) return JSON.stringify({ ok: false, error: "No se pudo identificar el número del paciente." });
+      const cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+      if (!cita) {
+        return JSON.stringify({ ok: false, motivo: "sin_cita", mensaje: "No tiene una cita registrada que cancelar." });
+      }
+      await cal.cancelarCita(cita.id);
+      return JSON.stringify({ ok: true, cancelada: cita.cuando });
     }
 
     return JSON.stringify({ ok: false, error: "Herramienta desconocida" });
