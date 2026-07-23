@@ -7,6 +7,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const { TOOLS, ejecutarHerramienta } = require("./tools");
+const recordatorios = require("./recordatorios");
 
 const app = express();
 app.use(express.json());
@@ -86,6 +87,72 @@ async function sendWhatsAppText(to, body) {
   if (!res.ok) {
     console.error("Error al enviar mensaje:", res.status, await res.text());
   }
+}
+
+// Envía una plantilla aprobada por Meta (necesaria para iniciar conversación)
+async function sendWhatsAppTemplate(to, plantilla, idioma, componentes = []) {
+  let dest = String(to).replace(/\D/g, "");
+  if (dest.startsWith("521") && dest.length === 13) dest = "52" + dest.slice(3);
+  if (dest.length === 10) dest = "52" + dest;
+
+  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: dest,
+      type: "template",
+      template: {
+        name: plantilla,
+        language: { code: idioma },
+        components: componentes
+      }
+    })
+  });
+  if (!res.ok) {
+    const detalle = await res.text();
+    throw new Error(`No se pudo enviar la plantilla "${plantilla}": ${res.status} ${detalle}`);
+  }
+  return res.json();
+}
+
+// Envía una plantilla aprobada por Meta (necesaria para mensajes que inicia el negocio)
+async function sendTemplate(to, nombrePlantilla, parametros = [], idioma = "es_MX") {
+  let dest = String(to);
+  if (dest.startsWith("521") && dest.length === 13) dest = "52" + dest.slice(3);
+
+  const componentes = parametros.length
+    ? [{ type: "body", parameters: parametros.map(p => ({ type: "text", text: String(p) })) }]
+    : [];
+
+  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to: dest,
+      type: "template",
+      template: {
+        name: nombrePlantilla,
+        language: { code: idioma },
+        components: componentes
+      }
+    })
+  });
+  if (!res.ok) {
+    const detalle = await res.text();
+    console.error(`Error enviando plantilla "${nombrePlantilla}":`, res.status, detalle);
+    throw new Error(`Plantilla ${nombrePlantilla} falló: ${res.status}`);
+  }
+  return true;
 }
 
 async function alertTeam(text) {
@@ -181,11 +248,64 @@ async function processMessage(msg, value) {
     return;
   }
 
-  // ---- Clasificación por tipo de mensaje ----
+  // ---- Respuestas a los botones de confirmación de cita ----
+  // Llegan como type "button" (plantillas) o "interactive" (botones de respuesta).
+  let textoBoton = null;
+  if (msg.type === "button" && msg.button) {
+    textoBoton = msg.button.text || msg.button.payload;
+  } else if (msg.type === "interactive" && msg.interactive?.button_reply) {
+    textoBoton = msg.interactive.button_reply.title;
+  }
+
+  if (textoBoton) {
+    try {
+      const respuesta = await recordatorios.procesarRespuestaBoton(from, textoBoton);
+      if (respuesta) {
+        console.log(`🔘 Botón "${textoBoton}" de +${from}`);
+        await sendWhatsAppText(from, respuesta);
+        chat.history.push(
+          { role: "user", content: `[El paciente respondió "${textoBoton}" al mensaje de confirmación]` },
+          { role: "assistant", content: respuesta }
+        );
+        return;
+      }
+    } catch (e) {
+      console.error("Error procesando respuesta de botón:", e.message);
+    }
+    // Si no se pudo asociar a una cita, se trata como texto normal
+    if (!textoBoton) return;
+  }
+
   let userText = null;
 
+  // ---- Respuestas a los botones de la plantilla de confirmación ----
+  // WhatsApp las envía como type "button" (quick reply de plantilla)
+  // o como "interactive" (botones de respuesta).
+  if (AGENDA_ACTIVA && (msg.type === "button" || msg.type === "interactive")) {
+    const textoBoton = msg.type === "button"
+      ? (msg.button?.text || msg.button?.payload || "")
+      : (msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "");
+    try {
+      const respuesta = await recordatorios.procesarRespuestaBoton(from, textoBoton);
+      if (respuesta) {
+        console.log(`💬 Respuesta de confirmación a +${from}: ${textoBoton}`);
+        await sendWhatsAppText(from, respuesta);
+        return;
+      }
+    } catch (e) {
+      console.error("Error procesando el botón de confirmación:", e.message);
+      return;
+    }
+    // Si no era Sí/No, se trata como texto normal
+    userText = textoBoton;
+  }
+
+  // ---- Clasificación por tipo de mensaje ----
   if (msg.type === "text") {
     userText = msg.text.body;
+
+  } else if (textoBoton) {
+    userText = textoBoton;
 
   } else if (msg.type === "audio") {
     // Fase 1: sin transcripción → respuesta fija, sin gastar IA
@@ -301,11 +421,32 @@ app.post("/webhook", (req, res) => {
 // Página de salud (para saber que el servidor vive)
 app.get("/", (req, res) => res.send("Bot del consultorio: en línea ✅"));
 
+// ---------- Temporizador de recordatorios ----------
+// Revisa cada 15 minutos si toca enviar confirmaciones, recordatorios o reseñas.
+// Se activa solo si RECORDATORIOS_ACTIVOS=true (requiere plantillas aprobadas en Meta).
+const RECORDATORIOS_ACTIVOS = String(process.env.RECORDATORIOS_ACTIVOS || "").trim().toLowerCase() === "true";
+
+function iniciarRecordatorios() {
+  if (!RECORDATORIOS_ACTIVOS || !AGENDA_ACTIVA) return;
+  const CADA = 15 * 60 * 1000;
+  const correr = () => {
+    recordatorios.revisarYEnviar({ sendTemplate, alertTeam })
+      .catch(e => console.error("Error en el ciclo de recordatorios:", e.message));
+  };
+  setTimeout(correr, 60 * 1000); // primera ronda al minuto de arrancar
+  setInterval(correr, CADA);
+  console.log("🔔 Recordatorios automáticos ACTIVOS (revisión cada 15 minutos)");
+}
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🩺 Bot del consultorio escuchando en el puerto ${PORT}`);
-  console.log(`⚙️  Modelo: ${MODEL} | Agenda automática: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | AGENDA_ACTIVA recibida: "${process.env.AGENDA_ACTIVA}"`);
+  console.log(`⚙️  Modelo: ${MODEL} | Agenda: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | Recordatorios: ${RECORDATORIOS_ACTIVOS ? "ACTIVOS ✅" : "INACTIVOS ❌"}`);
+  iniciarRecordatorios();
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
   if (faltantes.length) console.warn("⚠️ Faltan variables de entorno:", faltantes.join(", "));
+
+  // Programador de recordatorios (confirmaciones, recordatorios del día y reseñas)
+  recordatorios.iniciarProgramador(sendWhatsAppTemplate);
 });
