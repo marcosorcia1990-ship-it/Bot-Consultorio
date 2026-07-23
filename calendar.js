@@ -317,6 +317,7 @@ async function listarCitasDelBot(desde, hasta) {
         confirmacionEnviada: priv.confirmacionEnviada === "si",
         recordatorioEnviado: priv.recordatorioEnviado === "si",
         resenaEnviada: priv.resenaEnviada === "si",
+        reagendos: parseInt(priv.reagendos || "0", 10) || 0,
         nombre: (priv.nombre || (e.summary || "").replace(/^Consulta – /, "").replace(/\s*\(.*\)$/, "")).trim()
       };
     })
@@ -362,6 +363,72 @@ async function cancelarCita(eventId) {
 }
 
 
+// Verifica si un horario choca con algo, pudiendo excluir un evento (el que se está moviendo)
+async function hayChoque(start, end, excluirEventId = null) {
+  const cal = initCalendar();
+  for (const calId of CALENDARS_BUSY) {
+    try {
+      const { data } = await cal.events.list({
+        calendarId: calId,
+        timeMin: start.toISOString(),
+        timeMax: end.toISOString(),
+        singleEvents: true,
+        maxResults: 50
+      });
+      const conflicto = (data.items || []).some(e =>
+        e.start && e.start.dateTime &&
+        e.id !== excluirEventId &&
+        e.transparency !== "transparent" // las canceladas no cuentan
+      );
+      if (conflicto) return true;
+    } catch (e) {
+      console.warn(`No se pudo revisar choques en "${calId}":`, e.message);
+      return true; // ante la duda, no arriesgamos empalmar
+    }
+  }
+  return false;
+}
+
+// Mueve una cita existente a un nuevo horario (conserva paciente, teléfono y datos)
+async function reagendarCita(eventId, nuevoStartISO, duracionMin = 30) {
+  const cal = initCalendar();
+  const start = parseFechaMX(nuevoStartISO);
+  const end = new Date(start.getTime() + duracionMin * 60000);
+
+  if (isNaN(start.getTime())) return { ok: false, motivo: "fecha_invalida" };
+  if (start.getTime() - Date.now() < MIN_ANTICIPACION_MS) return { ok: false, motivo: "muy_pronto" };
+  if (!estaDentroDeRango(start, duracionMin)) return { ok: false, motivo: "fuera_de_horario" };
+  if (await hayChoque(start, end, eventId)) return { ok: false, motivo: "ocupado" };
+
+  const { data } = await cal.events.get({ calendarId: CALENDAR_ID, eventId });
+  const priv = (data.extendedProperties && data.extendedProperties.private) || {};
+  const veces = (parseInt(priv.reagendos || "0", 10) || 0) + 1;
+
+  await cal.events.patch({
+    calendarId: CALENDAR_ID,
+    eventId,
+    requestBody: {
+      start: { dateTime: start.toISOString(), timeZone: TIMEZONE },
+      end: { dateTime: end.toISOString(), timeZone: TIMEZONE },
+      colorId: COLOR.NUEVA,
+      transparency: "opaque", // vuelve a ocupar el horario
+      extendedProperties: {
+        private: {
+          ...priv,
+          estado: "nueva",
+          reagendos: String(veces),
+          // Se reinician las banderas: los mensajes deben enviarse para la nueva fecha
+          confirmacionEnviada: "",
+          recordatorioEnviado: "",
+          resenaEnviada: ""
+        }
+      }
+    }
+  });
+
+  return { ok: true, cuando: etiquetaHora(start), veces };
+}
+
 async function actualizarEstadoCita(eventId, estado) {
   const cal = initCalendar();
   const colorId = COLOR[estado] || COLOR.NUEVA;
@@ -380,5 +447,5 @@ async function actualizarEstadoCita(eventId, estado) {
 
 module.exports = {
   buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar, textoHorarioAtencion,
-  listarCitasDelBot, marcarEnCita, buscarCitaPorTelefono, cancelarCita
+  listarCitasDelBot, marcarEnCita, buscarCitaPorTelefono, cancelarCita, reagendarCita, hayChoque
 };
