@@ -165,6 +165,40 @@ async function alertTeam(text) {
   }
 }
 
+// Llama a OpenAI reintentando si responde 429 (límite de uso por minuto) o un
+// error temporal del servidor. Sin esto, un rechazo momentáneo dejaba al
+// paciente sin respuesta aunque la cita ya se hubiera movido correctamente.
+async function llamarOpenAI(body) {
+  const MAX_INTENTOS = 4;
+  let ultimoError = "";
+
+  for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (res.ok) return res.json();
+
+    ultimoError = await res.text();
+    const recuperable = res.status === 429 || res.status >= 500;
+    if (!recuperable || intento === MAX_INTENTOS) {
+      throw new Error(`API de OpenAI respondió ${res.status}: ${ultimoError}`);
+    }
+
+    // Respeta el tiempo que sugiere OpenAI; si no lo indica, espera cada vez más
+    const sugerido = parseFloat(res.headers.get("retry-after") || "");
+    const espera = !isNaN(sugerido) ? sugerido * 1000 : Math.min(2000 * intento, 8000);
+    console.warn(`⏳ OpenAI respondió ${res.status}; reintentando en ${Math.round(espera / 1000)}s (intento ${intento} de ${MAX_INTENTOS})`);
+    await new Promise(r => setTimeout(r, espera));
+  }
+  throw new Error(`API de OpenAI no respondió tras ${MAX_INTENTOS} intentos: ${ultimoError}`);
+}
+
 async function askAI(chat, userText, telefonoPaciente = null) {
   const { fecha, abierto } = nowInCordoba();
   const runtimeContext =
@@ -185,19 +219,7 @@ async function askAI(chat, userText, telefonoPaciente = null) {
 
   // Ciclo de function calling: la IA puede pedir herramientas hasta 5 veces por turno.
   for (let vuelta = 0; vuelta < 5; vuelta++) {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(bodyBase)
-    });
-
-    if (!res.ok) {
-      throw new Error(`API de OpenAI respondió ${res.status}: ${await res.text()}`);
-    }
-    const data = await res.json();
+    const data = await llamarOpenAI(bodyBase);
     const msg = data.choices?.[0]?.message;
     if (!msg) return "";
 
@@ -364,7 +386,9 @@ async function processMessage(msg, value) {
 }
 
 function trimHistory(chat) {
-  if (chat.history.length > 14) chat.history = chat.history.slice(-14);
+  // Historial corto: en cada vuelta de herramientas se reenvía completo a OpenAI,
+  // así que mantenerlo breve evita agotar el límite de consumo por minuto.
+  if (chat.history.length > 8) chat.history = chat.history.slice(-8);
 }
 
 // ---------- Webhook de Meta ----------
