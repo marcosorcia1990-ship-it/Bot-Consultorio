@@ -20,6 +20,11 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;         // Clave de la API de
 const MODEL = process.env.MODEL || "gpt-4o-mini";
 const GRAPH_VERSION = process.env.GRAPH_VERSION || "v25.0";
 
+// Notas de voz: el bot las transcribe y las contesta por escrito.
+// Se puede apagar poniendo AUDIO_ACTIVO en "false" (entonces pide el mensaje por texto).
+const AUDIO_ACTIVO = String(process.env.AUDIO_ACTIVO ?? "true").trim().toLowerCase() === "true";
+const MODELO_TRANSCRIPCION = process.env.MODELO_TRANSCRIPCION || "whisper-1";
+
 // Activa el agendado automático con Google Calendar (fase 2).
 // Ponlo en "true" en Render SOLO cuando ya configuraste CALENDAR_ID y GOOGLE_CREDENTIALS_JSON.
 // Se aceptan variantes con espacios o mayúsculas (TRUE, " true ", etc.)
@@ -199,6 +204,52 @@ async function llamarOpenAI(body) {
   throw new Error(`API de OpenAI no respondió tras ${MAX_INTENTOS} intentos: ${ultimoError}`);
 }
 
+// ---------- Notas de voz ----------
+
+// Descarga el archivo de audio que el paciente envió por WhatsApp.
+// Son dos pasos: primero WhatsApp da una liga temporal, luego se baja el archivo.
+async function descargarAudioWhatsApp(mediaId) {
+  const infoRes = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
+    headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}` }
+  });
+  if (!infoRes.ok) throw new Error(`WhatsApp no dio la liga del audio (${infoRes.status})`);
+  const info = await infoRes.json();
+  if (!info.url) throw new Error("WhatsApp no devolvió la liga del audio");
+
+  const archivoRes = await fetch(info.url, {
+    headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}` }
+  });
+  if (!archivoRes.ok) throw new Error(`No se pudo bajar el audio (${archivoRes.status})`);
+
+  return {
+    datos: Buffer.from(await archivoRes.arrayBuffer()),
+    tipo: info.mime_type || "audio/ogg"
+  };
+}
+
+// Convierte el audio en texto usando OpenAI. Devuelve "" si no se entendió nada.
+async function transcribirAudio(datos, tipo) {
+  // WhatsApp manda las notas de voz en .ogg; la extensión debe coincidir con el formato
+  const extension = String(tipo).includes("mp4") ? "mp4"
+    : String(tipo).includes("mpeg") ? "mp3"
+    : String(tipo).includes("wav") ? "wav" : "ogg";
+
+  const formulario = new FormData();
+  formulario.append("file", new Blob([datos], { type: tipo }), `nota-de-voz.${extension}`);
+  formulario.append("model", MODELO_TRANSCRIPCION);
+  formulario.append("language", "es"); // los pacientes hablan español: mejora la precisión
+
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${OPENAI_API_KEY}` },
+    body: formulario
+  });
+  if (!res.ok) throw new Error(`Transcripción falló (${res.status}): ${await res.text()}`);
+
+  const data = await res.json();
+  return String(data.text || "").trim();
+}
+
 async function askAI(chat, userText, telefonoPaciente = null) {
   const { fecha, abierto } = nowInCordoba();
   const runtimeContext =
@@ -330,15 +381,38 @@ async function processMessage(msg, value) {
     userText = textoBoton;
 
   } else if (msg.type === "audio") {
-    // Fase 1: sin transcripción → respuesta fija, sin gastar IA
-    await sendWhatsAppText(from,
-      "¡Gracias por su mensaje de voz! 🎙️ Para atenderle más rápido, ¿me lo podría escribir en un mensaje de texto? " +
-      "Si prefiere no escribir, no se preocupe: escucharemos su mensaje con atención y le responderemos en cuanto nos sea posible 🙏");
-    chat.history.push(
-      { role: "user", content: "[El paciente envió un mensaje de voz]" },
-      { role: "assistant", content: "[Se le pidió amablemente el mensaje por texto]" }
-    );
-    return;
+    // El paciente mandó una nota de voz: la transcribimos y la atendemos como texto
+    if (!AUDIO_ACTIVO) {
+      await sendWhatsAppText(from,
+        "¡Gracias por su mensaje de voz! 🎙️ Para atenderle más rápido, ¿me lo podría escribir en un mensaje de texto? " +
+        "Si prefiere no escribir, no se preocupe: escucharemos su mensaje con atención y le responderemos en cuanto nos sea posible 🙏");
+      return;
+    }
+
+    try {
+      const { datos, tipo } = await descargarAudioWhatsApp(msg.audio.id);
+      const transcripcion = await transcribirAudio(datos, tipo);
+
+      if (!transcripcion || transcripcion.length < 2) {
+        console.log(`🎙️ Audio sin contenido entendible de +${from}`);
+        await sendWhatsAppText(from,
+          "Disculpe, no logramos escuchar con claridad su mensaje de voz. " +
+          "¿Podría repetirlo o escribirnos por texto? 🙏");
+        return;
+      }
+
+      console.log(`🎙️ Nota de voz de +${from} transcrita: "${transcripcion.slice(0, 120)}"`);
+      // Se marca como nota de voz para que el asistente sepa que puede venir con
+      // errores de dictado y confirme los datos importantes (nombres, fechas).
+      userText = `[Nota de voz del paciente, transcrita automáticamente]: ${transcripcion}`;
+
+    } catch (e) {
+      console.error("🎙️ No se pudo transcribir el audio:", e.message);
+      await sendWhatsAppText(from,
+        "Recibimos su mensaje de voz, pero no pudimos escucharlo en este momento. " +
+        "¿Podría escribirnos por texto lo que necesita? 🙏");
+      return;
+    }
 
   } else if (msg.type === "image" || msg.type === "document" || msg.type === "video") {
     const caption = (msg[msg.type] && msg[msg.type].caption || "").trim();
@@ -465,7 +539,7 @@ function iniciarRecordatorios() {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🩺 Bot del consultorio escuchando en el puerto ${PORT}`);
-  console.log(`⚙️  Modelo: ${MODEL} | Agenda: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | Recordatorios: ${RECORDATORIOS_ACTIVOS ? "ACTIVOS ✅" : "INACTIVOS ❌"}`);
+  console.log(`⚙️  Modelo: ${MODEL} | Agenda: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | Recordatorios: ${RECORDATORIOS_ACTIVOS ? "ACTIVOS ✅" : "INACTIVOS ❌"} | Notas de voz: ${AUDIO_ACTIVO ? "ACTIVAS ✅" : "INACTIVAS ❌"}`);
   iniciarRecordatorios();
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
