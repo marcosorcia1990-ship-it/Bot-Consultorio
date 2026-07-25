@@ -231,17 +231,29 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null) {
 
     if (nombre === "buscar_cita_por_nombre") {
       const encontradas = await cal.buscarCitasPorNombre(args.nombre);
+      const vigentes = encontradas.filter(c => c.estado !== "cancelada");
+      const canceladas = encontradas.filter(c => c.estado === "cancelada");
+
       if (!encontradas.length) {
         return JSON.stringify({
           ok: true, encontradas: 0,
-          mensaje: "No hay ninguna cita registrada con ese nombre en los próximos 30 días. Dile que no fue posible localizarla, que el equipo lo verificará, y agrega [AVISAR_EQUIPO]."
+          mensaje: "No hay ninguna cita registrada con ese nombre en los próximos 30 días. Pregúntale si pudo haber quedado a nombre de un familiar; si insiste en que sí la tiene, dile que el equipo lo verificará y agrega [AVISAR_EQUIPO]. También puedes ofrecerle agendar una nueva con buscar_horarios."
         });
       }
+
+      if (!vigentes.length && canceladas.length) {
+        return JSON.stringify({
+          ok: true, encontradas: 0, habia_cancelada: true,
+          canceladas: canceladas.map(c => ({ nombre: c.nombre, cuando: c.cuando })),
+          mensaje: "La cita de ese paciente aparece CANCELADA, por eso no se puede mover. Explícaselo con tacto y ofrécele agendar una nueva con buscar_horarios."
+        });
+      }
+
       return JSON.stringify({
         ok: true,
-        encontradas: encontradas.length,
-        citas: encontradas.map(c => ({ event_id: c.id, nombre: c.nombre, cuando: c.cuando })),
-        mensaje: encontradas.length === 1
+        encontradas: vigentes.length,
+        citas: vigentes.map(c => ({ event_id: c.id, nombre: c.nombre, cuando: c.cuando })),
+        mensaje: vigentes.length === 1
           ? "Confírmale al paciente la fecha y hora encontradas antes de moverla o cancelarla. Usa este event_id al llamar a reagendar_cita o cancelar_cita."
           : "Hay varias citas con ese nombre: pregúntale al paciente cuál es la suya (menciónale las fechas) antes de mover o cancelar nada."
       });
