@@ -229,7 +229,7 @@ async function askAI(chat, userText, telefonoPaciente = null) {
       for (const tc of msg.tool_calls) {
         let args = {};
         try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
-        const resultado = await ejecutarHerramienta(tc.function.name, args, telefonoPaciente);
+        const resultado = await ejecutarHerramienta(tc.function.name, args, telefonoPaciente, chat);
         console.log(`🔧 Herramienta ${tc.function.name}:`, tc.function.arguments, "->", resultado.slice(0, 200));
         messages.push({ role: "tool", tool_call_id: tc.id, content: resultado });
       }
