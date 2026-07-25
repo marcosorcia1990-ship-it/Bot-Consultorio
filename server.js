@@ -517,6 +517,30 @@ app.post("/webhook", (req, res) => {
 });
 
 // Página de salud (para saber que el servidor vive)
+// Revisión manual de recordatorios (para pruebas y diagnóstico).
+// Protegida con el mismo token secreto del webhook: sin él, no hace nada.
+app.get("/revisar-recordatorios", async (req, res) => {
+  if (req.query.token !== VERIFY_TOKEN) {
+    return res.status(403).send("Token incorrecto.");
+  }
+  if (!RECORDATORIOS_ACTIVOS || !AGENDA_ACTIVA) {
+    return res.send("Los recordatorios están apagados. Revise RECORDATORIOS_ACTIVOS y AGENDA_ACTIVA en Render.");
+  }
+  const prudente = recordatorios.horaPrudente();
+  console.log(`🔔 Revisión manual de recordatorios solicitada (hora prudente: ${prudente})`);
+  try {
+    await recordatorios.revisarYEnviar({ sendTemplate, alertTeam });
+    res.send(
+      `Revisión ejecutada.\n` +
+      `Hora prudente (7:30 am - 9:00 pm): ${prudente ? "SÍ" : "NO — a esta hora no se envía nada"}\n` +
+      `Vea los registros de Render para el detalle.`
+    );
+  } catch (e) {
+    console.error("Error en la revisión manual:", e.message);
+    res.status(500).send("Error: " + e.message);
+  }
+});
+
 app.get("/", (req, res) => res.send("Bot del consultorio: en línea ✅"));
 
 // ---------- Temporizador de recordatorios ----------
