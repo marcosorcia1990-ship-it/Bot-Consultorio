@@ -398,6 +398,22 @@ async function listarTodasLasCitas(desde, hasta) {
     .filter(c => c.creadaPorBot || c.telefono); // descarta eventos que no son citas de pacientes
 }
 
+// Devuelve TODAS las citas vigentes asociadas a un teléfono, de la más próxima
+// a la más lejana. Importante en familias que comparten el mismo WhatsApp.
+async function buscarCitasPorTelefono(telefono) {
+  const ahora = new Date();
+  const hasta = new Date(ahora.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const citas = await listarTodasLasCitas(ahora, hasta);
+  const ultimos10 = String(telefono).replace(/\D/g, "").slice(-10);
+  if (!ultimos10) return [];
+  return citas.filter(c => {
+    if (c.estado === "cancelada") return false;
+    const dictado = String(c.telefono).replace(/\D/g, "").slice(-10);
+    const whats = String(c.telefonoWa).replace(/\D/g, "").slice(-10);
+    return dictado === ultimos10 || whats === ultimos10;
+  });
+}
+
 // Busca la cita más próxima de un teléfono.
 // Compara contra AMBOS números: el que el paciente dictó al agendar y el de WhatsApp
 // desde el que escribe (suelen ser distintos: dicta el fijo del consultorio, escribe del celular).
@@ -565,5 +581,5 @@ async function actualizarEstadoCita(eventId, estado) {
 
 module.exports = {
   buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar, textoHorarioAtencion,
-  listarCitasDelBot, listarTodasLasCitas, marcarEnCita, buscarCitaPorTelefono, buscarCitasPorNombre, buscarCitaPorId, cancelarCita, reagendarCita, hayChoque
+  listarCitasDelBot, listarTodasLasCitas, marcarEnCita, buscarCitaPorTelefono, buscarCitasPorTelefono, buscarCitasPorNombre, buscarCitaPorId, cancelarCita, reagendarCita, hayChoque
 };
