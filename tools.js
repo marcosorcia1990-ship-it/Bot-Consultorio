@@ -73,6 +73,10 @@ const TOOLS = [
           nuevo_start_iso: {
             type: "string",
             description: "El campo start_iso EXACTO del nuevo horario que el paciente eligió de la lista que devolvió buscar_horarios."
+          },
+          event_id: {
+            type: "string",
+            description: "Opcional. Solo si la cita se localizó con buscar_cita_por_nombre: pega aquí el event_id que devolvió. Si la cita se encontró con consultar_mi_cita, omite este campo."
           }
         },
         required: ["nuevo_start_iso"]
@@ -82,9 +86,35 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "buscar_cita_por_nombre",
+      description: "Busca la cita de un paciente por su NOMBRE. Úsalo SOLO cuando consultar_mi_cita no encontró nada (tiene_cita: false) y el paciente insiste en que sí tiene cita. Antes de llamar aquí, pregúntale amablemente a nombre de quién quedó registrada la cita.",
+      parameters: {
+        type: "object",
+        properties: {
+          nombre: {
+            type: "string",
+            description: "El nombre completo del paciente tal como lo escribió, por ejemplo 'Alma Andrade'."
+          }
+        },
+        required: ["nombre"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "cancelar_cita",
       description: "Cancela la cita del paciente y libera el horario para otros pacientes. Úsalo solo cuando el paciente diga claramente que ya no podrá asistir y NO quiera reagendar en ese momento. Si quiere cambiarla de fecha, usa reagendar_cita en su lugar.",
-      parameters: { type: "object", properties: {}, required: [] }
+      parameters: {
+        type: "object",
+        properties: {
+          event_id: {
+            type: "string",
+            description: "Opcional. Solo si la cita se localizó con buscar_cita_por_nombre: pega aquí el event_id que devolvió."
+          }
+        },
+        required: []
+      }
     }
   }
 ];
@@ -125,6 +155,7 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null) {
       const r = await cal.crearCita({
         nombre: args.nombre,
         telefono: args.telefono,
+        telefonoWa: telefonoPaciente || "",
         tipo: args.tipo,
         primeraVez: args.primera_vez,
         startISO: args.start_iso,
@@ -155,10 +186,16 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null) {
     }
 
     if (nombre === "reagendar_cita") {
-      if (!telefonoPaciente) return JSON.stringify({ ok: false, error: "No se pudo identificar el número del paciente." });
-      const cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+      // Localiza la cita: por el event_id que devolvió buscar_cita_por_nombre, o por teléfono
+      let cita = null;
+      if (args.event_id) {
+        cita = await cal.buscarCitaPorId(args.event_id);
+      } else {
+        if (!telefonoPaciente) return JSON.stringify({ ok: false, error: "No se pudo identificar el número del paciente." });
+        cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+      }
       if (!cita) {
-        return JSON.stringify({ ok: false, motivo: "sin_cita", mensaje: "No tiene una cita registrada que se pueda mover. Ofrécele agendar una nueva con buscar_horarios y crear_cita." });
+        return JSON.stringify({ ok: false, motivo: "sin_cita", mensaje: "No se localizó la cita. Si el paciente asegura tenerla, pregúntale a nombre de quién quedó y usa buscar_cita_por_nombre. Si no tiene, ofrécele agendar una nueva con buscar_horarios y crear_cita." });
       }
       const anterior = cita.cuando;
       const r = await cal.reagendarCita(cita.id, args.nuevo_start_iso, 30);
@@ -178,13 +215,36 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null) {
     }
 
     if (nombre === "cancelar_cita") {
-      if (!telefonoPaciente) return JSON.stringify({ ok: false, error: "No se pudo identificar el número del paciente." });
-      const cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+      let cita = null;
+      if (args.event_id) {
+        cita = await cal.buscarCitaPorId(args.event_id);
+      } else {
+        if (!telefonoPaciente) return JSON.stringify({ ok: false, error: "No se pudo identificar el número del paciente." });
+        cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+      }
       if (!cita) {
-        return JSON.stringify({ ok: false, motivo: "sin_cita", mensaje: "No tiene una cita registrada que cancelar." });
+        return JSON.stringify({ ok: false, motivo: "sin_cita", mensaje: "No se localizó la cita que cancelar. Si el paciente asegura tenerla, pregúntale a nombre de quién quedó y usa buscar_cita_por_nombre." });
       }
       await cal.cancelarCita(cita.id);
       return JSON.stringify({ ok: true, cancelada: cita.cuando });
+    }
+
+    if (nombre === "buscar_cita_por_nombre") {
+      const encontradas = await cal.buscarCitasPorNombre(args.nombre);
+      if (!encontradas.length) {
+        return JSON.stringify({
+          ok: true, encontradas: 0,
+          mensaje: "No hay ninguna cita registrada con ese nombre en los próximos 30 días. Dile que no fue posible localizarla, que el equipo lo verificará, y agrega [AVISAR_EQUIPO]."
+        });
+      }
+      return JSON.stringify({
+        ok: true,
+        encontradas: encontradas.length,
+        citas: encontradas.map(c => ({ event_id: c.id, nombre: c.nombre, cuando: c.cuando })),
+        mensaje: encontradas.length === 1
+          ? "Confírmale al paciente la fecha y hora encontradas antes de moverla o cancelarla. Usa este event_id al llamar a reagendar_cita o cancelar_cita."
+          : "Hay varias citas con ese nombre: pregúntale al paciente cuál es la suya (menciónale las fechas) antes de mover o cancelar nada."
+      });
     }
 
     return JSON.stringify({ ok: false, error: "Herramienta desconocida" });
