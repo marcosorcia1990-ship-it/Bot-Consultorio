@@ -443,8 +443,9 @@ async function buscarCitasPorNombre(nombreBuscado) {
   const buscado = normalizarNombre(nombreBuscado);
 
   // Diagnóstico: deja ver en los registros qué hay realmente en el calendario
-  console.log(`🔎 Buscando "${nombreBuscado}" entre ${citas.length} cita(s):`,
-    citas.map(c => `${c.nombre || "(sin nombre)"} [${c.estado}${c.creadaPorBot ? "" : ", manual"}] ${c.cuando}`).join(" | ") || "(ninguna)");
+  // Diagnóstico breve: cuántas citas se revisaron y una muestra
+  const muestra = citas.slice(0, 5).map(c => `${c.nombre || "(sin nombre)"} ${c.cuando}`).join(" | ");
+  console.log(`🔎 Buscando "${nombreBuscado}" entre ${citas.length} cita(s). Muestra: ${muestra || "(ninguna)"}${citas.length > 5 ? " ..." : ""}`);
 
   if (buscado.length < 3) return [];
   const palabras = buscado.split(" ").filter(p => p.length > 2);
