@@ -240,7 +240,7 @@ function parseFechaMX(texto) {
   return mxDate(+m[1], +m[2], +m[3], +m[4], +m[5]);
 }
 
-async function crearCita({ nombre, telefono, tipo, primeraVez, startISO, duracionMin }) {
+async function crearCita({ nombre, telefono, telefonoWa, tipo, primeraVez, startISO, duracionMin }) {
   const cal = initCalendar();
   const start = parseFechaMX(startISO);
   const end = new Date(start.getTime() + duracionMin * 60000);
@@ -281,7 +281,7 @@ async function crearCita({ nombre, telefono, tipo, primeraVez, startISO, duracio
     start: { dateTime: start.toISOString(), timeZone: TIMEZONE },
     end: { dateTime: end.toISOString(), timeZone: TIMEZONE },
     colorId: COLOR.NUEVA,
-    extendedProperties: { private: { creadoPor: BOT_TAG, telefono, nombre, estado: "nueva" } }
+    extendedProperties: { private: { creadoPor: BOT_TAG, telefono, telefonoWa: telefonoWa || "", nombre, estado: "nueva" } }
   };
 
   const res = await cal.events.insert({ calendarId: CALENDAR_ID, requestBody: evento });
@@ -313,6 +313,7 @@ async function listarCitasDelBot(desde, hasta) {
         inicio: new Date(e.start.dateTime),
         cuando: etiquetaHora(new Date(e.start.dateTime)),
         telefono: priv.telefono || "",
+        telefonoWa: priv.telefonoWa || "",
         estado: priv.estado || "nueva",
         confirmacionEnviada: priv.confirmacionEnviada === "si",
         recordatorioEnviado: priv.recordatorioEnviado === "si",
@@ -321,7 +322,7 @@ async function listarCitasDelBot(desde, hasta) {
         nombre: (priv.nombre || (e.summary || "").replace(/^Consulta – /, "").replace(/\s*\(.*\)$/, "")).trim()
       };
     })
-    .filter(c => c.telefono);
+    .filter(c => c.telefono || c.telefonoWa);
 }
 
 // Marca una bandera en la cita (confirmacionEnviada, recordatorioEnviado, resenaEnviada).
@@ -338,13 +339,64 @@ async function marcarEnCita(eventId, campos) {
   });
 }
 
-// Busca la cita más próxima de un teléfono (para asociar respuestas de botones)
+// Busca la cita más próxima de un teléfono.
+// Compara contra AMBOS números: el que el paciente dictó al agendar y el de WhatsApp
+// desde el que escribe (suelen ser distintos: dicta el fijo del consultorio, escribe del celular).
 async function buscarCitaPorTelefono(telefono) {
   const ahora = new Date();
   const hasta = new Date(ahora.getTime() + 30 * 24 * 60 * 60 * 1000);
   const citas = await listarCitasDelBot(ahora, hasta);
-  const ultimos10 = String(telefono).slice(-10);
-  return citas.find(c => String(c.telefono).replace(/\D/g, "").slice(-10) === ultimos10) || null;
+  const ultimos10 = String(telefono).replace(/\D/g, "").slice(-10);
+  if (!ultimos10) return null;
+  return citas.find(c => {
+    const dictado = String(c.telefono).replace(/\D/g, "").slice(-10);
+    const whats = String(c.telefonoWa).replace(/\D/g, "").slice(-10);
+    return dictado === ultimos10 || whats === ultimos10;
+  }) || null;
+}
+
+// Busca una cita concreta por su identificador de evento (la usa el asistente
+// cuando localizó la cita por nombre y necesita moverla o cancelarla)
+async function buscarCitaPorId(eventId) {
+  const ahora = new Date();
+  const hasta = new Date(ahora.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const citas = await listarCitasDelBot(ahora, hasta);
+  return citas.find(c => c.id === eventId) || null;
+}
+
+// Normaliza un nombre para comparar: minúsculas, sin acentos y sin espacios de más
+function normalizarNombre(txt) {
+  return String(txt || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Busca citas por el nombre del paciente (respaldo cuando el teléfono no coincide).
+// Devuelve TODAS las coincidencias para que el asistente pueda confirmar cuál es.
+async function buscarCitasPorNombre(nombreBuscado) {
+  const ahora = new Date();
+  const hasta = new Date(ahora.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const citas = await listarCitasDelBot(ahora, hasta);
+  const buscado = normalizarNombre(nombreBuscado);
+  if (buscado.length < 3) return [];
+  const palabras = buscado.split(" ").filter(p => p.length > 2);
+  const vigentes = citas.filter(c => c.estado !== "cancelada" && normalizarNombre(c.nombre));
+
+  // Primero busca coincidencias claras (un nombre contiene al otro)
+  const exactas = vigentes.filter(c => {
+    const registrado = normalizarNombre(c.nombre);
+    return registrado.includes(buscado) || buscado.includes(registrado);
+  });
+  if (exactas.length) return exactas;
+
+  // Si no hubo, acepta coincidencias parciales (comparten alguna palabra larga)
+  return vigentes.filter(c => {
+    const partes = normalizarNombre(c.nombre).split(" ");
+    return palabras.some(p => partes.includes(p));
+  });
 }
 
 // Cancela una cita: la marca en rojo y libera el horario
@@ -447,5 +499,5 @@ async function actualizarEstadoCita(eventId, estado) {
 
 module.exports = {
   buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar, textoHorarioAtencion,
-  listarCitasDelBot, marcarEnCita, buscarCitaPorTelefono, cancelarCita, reagendarCita, hayChoque
+  listarCitasDelBot, marcarEnCita, buscarCitaPorTelefono, buscarCitasPorNombre, buscarCitaPorId, cancelarCita, reagendarCita, hayChoque
 };
