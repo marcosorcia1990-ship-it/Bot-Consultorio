@@ -339,13 +339,72 @@ async function marcarEnCita(eventId, campos) {
   });
 }
 
+// Extrae un teléfono de un texto libre (título o descripción del evento).
+// Devuelve los últimos 10 dígitos, que es como se comparan los números.
+function extraerTelefono(texto) {
+  const candidatos = String(texto || "").match(/\+?\d[\d\s\-().]{7,}/g) || [];
+  for (const c of candidatos) {
+    const digitos = c.replace(/\D/g, "");
+    if (digitos.length >= 10) return digitos.slice(-10);
+  }
+  return "";
+}
+
+// Limpia el título de un evento para quedarse solo con el nombre del paciente.
+// Sirve tanto para "Consulta – Alma Andrade (1ª vez)" como para "Alma Andrade 2711403390".
+function nombreDesdeTitulo(titulo) {
+  return String(titulo || "")
+    .replace(/^consulta\s*[–—-]\s*/i, "")
+    .replace(/\((1ª|1a|primera)\s*vez\)/gi, "")
+    .replace(/\(subsecuente\)/gi, "")
+    .replace(/\+?\d[\d\s\-().]{6,}/g, " ")   // quita los teléfonos del título
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Lee TODAS las citas del calendario en un rango: las que creó el bot Y las que
+// el equipo capturó a mano. Para distinguir una cita de paciente de un evento
+// personal del doctor, exige que tenga un teléfono en el título o la descripción
+// (así es como el equipo las registra) o que la haya creado el bot.
+async function listarTodasLasCitas(desde, hasta) {
+  const cal = initCalendar();
+  const { data } = await cal.events.list({
+    calendarId: CALENDAR_ID,
+    timeMin: desde.toISOString(),
+    timeMax: hasta.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+    maxResults: 250
+  });
+
+  return (data.items || [])
+    .filter(e => e.start && e.start.dateTime) // ignora eventos de todo el día (pagos, avisos)
+    .map(e => {
+      const priv = (e.extendedProperties && e.extendedProperties.private) || {};
+      const creadaPorBot = priv.creadoPor === BOT_TAG;
+      const telTexto = extraerTelefono(e.summary) || extraerTelefono(e.description);
+      return {
+        id: e.id,
+        titulo: e.summary || "",
+        inicio: new Date(e.start.dateTime),
+        cuando: etiquetaHora(new Date(e.start.dateTime)),
+        telefono: priv.telefono || telTexto,
+        telefonoWa: priv.telefonoWa || "",
+        estado: priv.estado || "nueva",
+        creadaPorBot,
+        nombre: (priv.nombre || nombreDesdeTitulo(e.summary)).trim()
+      };
+    })
+    .filter(c => c.creadaPorBot || c.telefono); // descarta eventos que no son citas de pacientes
+}
+
 // Busca la cita más próxima de un teléfono.
 // Compara contra AMBOS números: el que el paciente dictó al agendar y el de WhatsApp
 // desde el que escribe (suelen ser distintos: dicta el fijo del consultorio, escribe del celular).
 async function buscarCitaPorTelefono(telefono) {
   const ahora = new Date();
   const hasta = new Date(ahora.getTime() + 30 * 24 * 60 * 60 * 1000);
-  const citas = await listarCitasDelBot(ahora, hasta);
+  const citas = await listarTodasLasCitas(ahora, hasta);
   const ultimos10 = String(telefono).replace(/\D/g, "").slice(-10);
   if (!ultimos10) return null;
   return citas.find(c => {
@@ -360,7 +419,7 @@ async function buscarCitaPorTelefono(telefono) {
 async function buscarCitaPorId(eventId) {
   const ahora = new Date();
   const hasta = new Date(ahora.getTime() + 30 * 24 * 60 * 60 * 1000);
-  const citas = await listarCitasDelBot(ahora, hasta);
+  const citas = await listarTodasLasCitas(ahora, hasta);
   return citas.find(c => c.id === eventId) || null;
 }
 
@@ -375,25 +434,31 @@ function normalizarNombre(txt) {
 }
 
 // Busca citas por el nombre del paciente (respaldo cuando el teléfono no coincide).
-// Devuelve TODAS las coincidencias para que el asistente pueda confirmar cuál es.
+// Devuelve TODAS las coincidencias, incluidas las canceladas (marcadas como tal),
+// para que el asistente pueda explicarle al paciente qué ocurrió con su cita.
 async function buscarCitasPorNombre(nombreBuscado) {
   const ahora = new Date();
   const hasta = new Date(ahora.getTime() + 30 * 24 * 60 * 60 * 1000);
-  const citas = await listarCitasDelBot(ahora, hasta);
+  const citas = await listarTodasLasCitas(ahora, hasta);
   const buscado = normalizarNombre(nombreBuscado);
+
+  // Diagnóstico: deja ver en los registros qué hay realmente en el calendario
+  console.log(`🔎 Buscando "${nombreBuscado}" entre ${citas.length} cita(s):`,
+    citas.map(c => `${c.nombre || "(sin nombre)"} [${c.estado}${c.creadaPorBot ? "" : ", manual"}] ${c.cuando}`).join(" | ") || "(ninguna)");
+
   if (buscado.length < 3) return [];
   const palabras = buscado.split(" ").filter(p => p.length > 2);
-  const vigentes = citas.filter(c => c.estado !== "cancelada" && normalizarNombre(c.nombre));
+  const conNombre = citas.filter(c => normalizarNombre(c.nombre));
 
   // Primero busca coincidencias claras (un nombre contiene al otro)
-  const exactas = vigentes.filter(c => {
+  const exactas = conNombre.filter(c => {
     const registrado = normalizarNombre(c.nombre);
     return registrado.includes(buscado) || buscado.includes(registrado);
   });
   if (exactas.length) return exactas;
 
   // Si no hubo, acepta coincidencias parciales (comparten alguna palabra larga)
-  return vigentes.filter(c => {
+  return conNombre.filter(c => {
     const partes = normalizarNombre(c.nombre).split(" ");
     return palabras.some(p => partes.includes(p));
   });
@@ -499,5 +564,5 @@ async function actualizarEstadoCita(eventId, estado) {
 
 module.exports = {
   buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar, textoHorarioAtencion,
-  listarCitasDelBot, marcarEnCita, buscarCitaPorTelefono, buscarCitasPorNombre, buscarCitaPorId, cancelarCita, reagendarCita, hayChoque
+  listarCitasDelBot, listarTodasLasCitas, marcarEnCita, buscarCitaPorTelefono, buscarCitasPorNombre, buscarCitaPorId, cancelarCita, reagendarCita, hayChoque
 };
