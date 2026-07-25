@@ -50,6 +50,14 @@ async function revisarYEnviar({ sendTemplate, alertTeam }) {
   const sinConfirmar = [];
 
   for (const cita of citas) {
+    // A dónde se envía: SIEMPRE se prefiere el WhatsApp desde el que escribió el
+    // paciente. El teléfono que dicta suele ser un fijo o un número sin WhatsApp,
+    // y ahí el recordatorio nunca le llegaría.
+    const destino = cita.telefonoWa || cita.telefono;
+    if (!destino) {
+      console.warn(`⚠️ Sin número para recordatorio: ${cita.nombre} — ${cita.cuando}`);
+      continue;
+    }
     const inicio = new Date(cita.inicio).getTime();
     const faltan = inicio - ahora;
     const pasaron = ahora - inicio;
@@ -58,7 +66,7 @@ async function revisarYEnviar({ sendTemplate, alertTeam }) {
     try {
       // --- 1. Confirmación: 2 días antes (ventana 36-60 h) ---
       if (!cita.confirmacionEnviada && !cancelada && faltan > 36 * H && faltan <= 60 * H) {
-        await sendTemplate(cita.telefono, PLANTILLAS.confirmacion,
+        await sendTemplate(destino, PLANTILLAS.confirmacion,
           [cita.nombre || "paciente", cita.cuando], IDIOMA_PLANTILLA);
         await cal.marcarEnCita(cita.id, { confirmacionEnviada: "si", estado: "pendiente" });
         await cal.actualizarEstadoCita(cita.id, "PENDIENTE"); // amarillo
@@ -68,7 +76,7 @@ async function revisarYEnviar({ sendTemplate, alertTeam }) {
 
       // --- 2. Recordatorio del día de la cita (ventana 0-14 h antes) ---
       if (!cita.recordatorioEnviado && !cancelada && faltan > 0 && faltan <= 14 * H) {
-        await sendTemplate(cita.telefono, PLANTILLAS.recordatorio,
+        await sendTemplate(destino, PLANTILLAS.recordatorio,
           [cita.nombre || "paciente", cita.cuando], IDIOMA_PLANTILLA);
         await cal.marcarEnCita(cita.id, { recordatorioEnviado: "si" });
         console.log(`📤 Recordatorio enviado: ${cita.nombre} — ${cita.cuando}`);
@@ -77,7 +85,7 @@ async function revisarYEnviar({ sendTemplate, alertTeam }) {
 
       // --- 3. Seguimiento y reseña al día siguiente (12-36 h después) ---
       if (!cita.resenaEnviada && !cancelada && pasaron > 12 * H && pasaron <= 36 * H) {
-        await sendTemplate(cita.telefono, PLANTILLAS.resena,
+        await sendTemplate(destino, PLANTILLAS.resena,
           [cita.nombre || "paciente"], IDIOMA_PLANTILLA);
         await cal.marcarEnCita(cita.id, { resenaEnviada: "si" });
         console.log(`📤 Seguimiento y reseña enviados: ${cita.nombre}`);
