@@ -178,10 +178,24 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null, sesion
 
     if (nombre === "consultar_mi_cita") {
       if (!telefonoPaciente) return JSON.stringify({ ok: false, error: "No se pudo identificar el número del paciente." });
-      const cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
-      if (!cita) {
+      const citas = await cal.buscarCitasPorTelefono(telefonoPaciente);
+
+      if (!citas.length) {
         return JSON.stringify({ ok: true, tiene_cita: false, instruccion_interna: "Este paciente no tiene ninguna cita próxima registrada con su número de WhatsApp." });
       }
+
+      // Varias citas con el mismo número: suele ser una familia que comparte
+      // teléfono. NO se debe suponer cuál es: hay que preguntarle al paciente.
+      if (citas.length > 1) {
+        sesion.citaLocalizada = null;
+        return JSON.stringify({
+          ok: true, tiene_cita: true, varias: true,
+          citas: citas.map(c => ({ event_id: c.id, nombre: c.nombre, cuando: c.cuando })),
+          instruccion_interna: "Hay VARIAS citas registradas con este número (probablemente de distintos familiares). NO supongas cuál es la suya: menciónale los nombres y las fechas y pregúntale a cuál se refiere. Solo después de que confirme, usa el event_id correspondiente."
+        });
+      }
+
+      const cita = citas[0];
       sesion.citaLocalizada = { id: cita.id, nombre: cita.nombre, cuando: cita.cuando };
       return JSON.stringify({
         ok: true, tiene_cita: true, cuando: cita.cuando, nombre: cita.nombre,
@@ -198,7 +212,15 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null, sesion
         cita = await cal.buscarCitaPorId(idRecordado);
       }
       if (!cita && telefonoPaciente) {
-        cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+        const candidatas = await cal.buscarCitasPorTelefono(telefonoPaciente);
+        if (candidatas.length > 1) {
+          return JSON.stringify({
+            ok: false, motivo: "varias_citas",
+            citas: candidatas.map(c => ({ event_id: c.id, nombre: c.nombre, cuando: c.cuando })),
+            instruccion_interna: "NO se movió nada. Hay VARIAS citas con este número (probablemente de distintos familiares). Menciónale los nombres y fechas y pregúntale cuál desea mover. Solo entonces vuelve a llamar a reagendar_cita con el event_id correcto."
+          });
+        }
+        cita = candidatas[0] || null;
       }
       if (!cita) {
         return JSON.stringify({ ok: false, motivo: "sin_cita", instruccion_interna: "NO se localizó la cita, así que NO se movió nada. NO crees una cita nueva sin avisarle: pregúntale primero a nombre de quién quedó registrada y usa buscar_cita_por_nombre." });
@@ -227,7 +249,15 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null, sesion
         cita = await cal.buscarCitaPorId(idRecordado);
       }
       if (!cita && telefonoPaciente) {
-        cita = await cal.buscarCitaPorTelefono(telefonoPaciente);
+        const candidatas = await cal.buscarCitasPorTelefono(telefonoPaciente);
+        if (candidatas.length > 1) {
+          return JSON.stringify({
+            ok: false, motivo: "varias_citas",
+            citas: candidatas.map(c => ({ event_id: c.id, nombre: c.nombre, cuando: c.cuando })),
+            instruccion_interna: "NO se canceló nada. Hay VARIAS citas con este número (probablemente de distintos familiares). Pregúntale cuál desea cancelar mencionándole nombres y fechas, y confirma antes de proceder."
+          });
+        }
+        cita = candidatas[0] || null;
       }
       if (!cita) {
         return JSON.stringify({ ok: false, motivo: "sin_cita", instruccion_interna: "NO se localizó la cita, así que no se canceló nada. Pregúntale a nombre de quién quedó registrada y usa buscar_cita_por_nombre." });
