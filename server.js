@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const { TOOLS, ejecutarHerramienta } = require("./tools");
 const recordatorios = require("./recordatorios");
+const alta = require("./alta");
 
 const app = express();
 app.use(express.json());
@@ -47,11 +48,15 @@ const chats = new Map();
 const processedIds = new Set(); // para no procesar dos veces el mismo mensaje
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function getChat(from) {
-  if (!chats.has(from)) {
-    chats.set(from, { history: [], lastActivity: 0, humanUntil: 0 });
+// La clave son los últimos 10 dígitos: en México el mismo número llega a veces como
+// 521XXXXXXXXXX (mensajes del paciente) y a veces como 52XXXXXXXXXX (ecos de la app).
+// Sin esto, lo que escribe el equipo no silenciaba al bot en ese chat.
+function getChat(numero) {
+  const clave = String(numero).replace(/\D/g, "").slice(-10);
+  if (!chats.has(clave)) {
+    chats.set(clave, { history: [], lastActivity: 0, humanUntil: 0 });
   }
-  return chats.get(from);
+  return chats.get(clave);
 }
 
 // ---------- Utilidades ----------
@@ -325,12 +330,12 @@ async function processMessage(msg, value) {
   // Llegan como type "button" (plantillas) o "interactive" (botones de respuesta).
   let textoBoton = null;
   if (msg.type === "button" && msg.button) {
-    textoBoton = msg.button.text || msg.button.payload;
-  } else if (msg.type === "interactive" && msg.interactive?.button_reply) {
-    textoBoton = msg.interactive.button_reply.title;
+    textoBoton = msg.button.text || msg.button.payload || "";
+  } else if (msg.type === "interactive") {
+    textoBoton = msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "";
   }
 
-  if (textoBoton) {
+  if (textoBoton && AGENDA_ACTIVA) {
     try {
       const respuesta = await recordatorios.procesarRespuestaBoton(from, textoBoton);
       if (respuesta) {
@@ -344,34 +349,12 @@ async function processMessage(msg, value) {
       }
     } catch (e) {
       console.error("Error procesando respuesta de botón:", e.message);
+      return;
     }
-    // Si no se pudo asociar a una cita, se trata como texto normal
-    if (!textoBoton) return;
+    // Si no era Sí/No, se atiende como texto normal (abajo)
   }
 
   let userText = null;
-
-  // ---- Respuestas a los botones de la plantilla de confirmación ----
-  // WhatsApp las envía como type "button" (quick reply de plantilla)
-  // o como "interactive" (botones de respuesta).
-  if (AGENDA_ACTIVA && (msg.type === "button" || msg.type === "interactive")) {
-    const textoBoton = msg.type === "button"
-      ? (msg.button?.text || msg.button?.payload || "")
-      : (msg.interactive?.button_reply?.title || msg.interactive?.list_reply?.title || "");
-    try {
-      const respuesta = await recordatorios.procesarRespuestaBoton(from, textoBoton);
-      if (respuesta) {
-        console.log(`💬 Respuesta de confirmación a +${from}: ${textoBoton}`);
-        await sendWhatsAppText(from, respuesta);
-        return;
-      }
-    } catch (e) {
-      console.error("Error procesando el botón de confirmación:", e.message);
-      return;
-    }
-    // Si no era Sí/No, se trata como texto normal
-    userText = textoBoton;
-  }
 
   // ---- Clasificación por tipo de mensaje ----
   if (msg.type === "text") {
@@ -496,6 +479,9 @@ app.post("/webhook", (req, res) => {
           if (to) {
             const chat = getChat(to);
             chat.humanUntil = Date.now() + DAY_MS;
+            // También cuenta como actividad: si no, el reinicio por inactividad
+            // (más de 24 h sin mensajes) borraba esta marca y el bot volvía a contestar.
+            chat.lastActivity = Date.now();
             console.log(`👤 Chat tomado por el equipo: ${to}`);
           }
         }
@@ -516,7 +502,9 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-// Página de salud (para saber que el servidor vive)
+// Alta del número con coexistencia (se usa una sola vez)
+alta.registrarRutas(app);
+
 // Revisión manual de recordatorios (para pruebas y diagnóstico).
 // Protegida con el mismo token secreto del webhook: sin él, no hace nada.
 app.get("/revisar-recordatorios", async (req, res) => {
@@ -541,6 +529,7 @@ app.get("/revisar-recordatorios", async (req, res) => {
   }
 });
 
+// Página de salud (para saber que el servidor vive)
 app.get("/", (req, res) => res.send("Bot del consultorio: en línea ✅"));
 
 // ---------- Temporizador de recordatorios ----------

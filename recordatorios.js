@@ -118,7 +118,8 @@ async function procesarRespuestaBoton(telefono, textoBoton) {
 
   let cita = null;
   try {
-    cita = await cal.buscarCitaPorTelefono(telefono);
+    // Solo citas vigentes: un "Sí" a un mensaje viejo no debe revivir una cita cancelada
+    cita = (await cal.buscarCitasPorTelefono(telefono))[0] || null;
   } catch (e) {
     console.error("Error buscando la cita del paciente:", e.message);
   }
