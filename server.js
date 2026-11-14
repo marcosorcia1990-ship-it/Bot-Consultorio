@@ -8,6 +8,8 @@ const fs = require("fs");
 const path = require("path");
 const { TOOLS, ejecutarHerramienta } = require("./tools");
 const recordatorios = require("./recordatorios");
+const cal = require("./calendar");
+const priv = require("./privacidad");
 const alta = require("./alta");
 
 const app = express();
@@ -46,7 +48,6 @@ const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, "system-prompt.md"), 
 // chats: por cada número → historial de conversación y banderas
 const chats = new Map();
 const processedIds = new Set(); // para no procesar dos veces el mismo mensaje
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 // La clave son los últimos 10 dígitos: en México el mismo número llega a veces como
 // 521XXXXXXXXXX (mensajes del paciente) y a veces como 52XXXXXXXXXX (ecos de la app).
@@ -95,7 +96,7 @@ async function sendWhatsAppText(to, body) {
     })
   });
   if (!res.ok) {
-    console.error("Error al enviar mensaje:", res.status, await res.text());
+    console.error("Error al enviar mensaje:", res.status, priv.sanitizarLog(await res.text()));
   }
 }
 
@@ -159,14 +160,15 @@ async function sendTemplate(to, nombrePlantilla, parametros = [], idioma = "es_M
   });
   if (!res.ok) {
     const detalle = await res.text();
-    console.error(`Error enviando plantilla "${nombrePlantilla}":`, res.status, detalle);
+    console.error(`Error enviando plantilla "${nombrePlantilla}":`, res.status, priv.sanitizarLog(detalle));
     throw new Error(`Plantilla ${nombrePlantilla} falló: ${res.status}`);
   }
   return true;
 }
 
-async function alertTeam(text) {
-  console.log("🔔 ALERTA INTERNA:", text);
+// `text` va al WhatsApp interno del equipo; `motivoLog` es lo único que queda en los logs.
+async function alertTeam(text, motivoLog = "aviso al equipo") {
+  console.log(`🔔 Alerta interna: ${motivoLog}`);
   if (!INTERNAL_ALERT_NUMBER) return;
   try {
     await sendWhatsAppText(INTERNAL_ALERT_NUMBER, `🔔 Aviso del bot:\n${text}`);
@@ -286,7 +288,10 @@ async function askAI(chat, userText, telefonoPaciente = null) {
         let args = {};
         try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
         const resultado = await ejecutarHerramienta(tc.function.name, args, telefonoPaciente, chat);
-        console.log(`🔧 Herramienta ${tc.function.name}:`, tc.function.arguments, "->", resultado.slice(0, 200));
+        // Log mínimo: nombre de la herramienta y resultado, sin argumentos ni datos del paciente
+        let estado = "?";
+        try { const r = JSON.parse(resultado); estado = r.ok ? "ok" : `falló (${r.motivo || r.error || "sin motivo"})`; } catch {}
+        console.log(`🔧 Herramienta ${tc.function.name}: ${estado}`);
         messages.push({ role: "tool", tool_call_id: tc.id, content: resultado });
       }
       continue; // volver a preguntar a la IA con el resultado de la herramienta
@@ -298,31 +303,76 @@ async function askAI(chat, userText, telefonoPaciente = null) {
   return "En breve le confirmamos por este medio 🙏"; // salvaguarda si algo se cicla
 }
 
+// ---------- Envío al paciente ----------
+// En el primer mensaje de cada conversación se envía el aviso de privacidad simplificado.
+// En urgencias va DESPUÉS de la indicación de acudir a urgencias, que tiene prioridad.
+async function enviarAlPaciente(chat, to, texto, { avisoDespues = false } = {}) {
+  if (!chat.avisoEnviado && !avisoDespues) {
+    await sendWhatsAppText(to, priv.MENSAJES.avisoSimplificado);
+    chat.avisoEnviado = true;
+  }
+  await sendWhatsAppText(to, texto);
+  if (!chat.avisoEnviado) {
+    await sendWhatsAppText(to, priv.MENSAJES.avisoSimplificado);
+    chat.avisoEnviado = true;
+  }
+}
+
+// Respuesta fija (no pasa por la IA) + aviso al equipo sin el contenido del mensaje.
+async function responderFijo(chat, from, clave, motivo, opciones = {}) {
+  const id = priv.idPaciente(from);
+  await enviarAlPaciente(chat, from, priv.MENSAJES[clave], opciones);
+  console.log(`🛡️ Respuesta fija "${clave}" a ${id} (sin IA)`);
+  if (motivo) {
+    await alertTeam(
+      `${motivo}.\nChat: +${from}\nRevise y responda desde la app de WhatsApp Business.`,
+      `${motivo} (${id})`);
+  }
+}
+
+async function manejarBaja(chat, from) {
+  let marcadas = 0;
+  if (AGENDA_ACTIVA) {
+    try { marcadas = await cal.marcarSinAutomaticos(from); }
+    catch (e) { console.error("No se pudo registrar la baja:", e.message); }
+  }
+  if (marcadas > 0) {
+    console.log(`🔕 Baja de mensajes automáticos registrada en ${marcadas} cita(s) de ${priv.idPaciente(from)}`);
+    await enviarAlPaciente(chat, from, priv.MENSAJES.bajaRegistrada);
+  } else {
+    await responderFijo(chat, from, "bajaPendiente",
+      "El paciente pidió no recibir mensajes automáticos y no se pudo registrar sola (no tiene citas del bot). Regístrela a mano");
+  }
+}
+
 // ---------- Lógica principal por mensaje ----------
 async function processMessage(msg, value) {
   const from = msg.from; // número del paciente (con lada de país)
   const chat = getChat(from);
   const now = Date.now();
+  const id = priv.idPaciente(from);
 
-  const vistaPrevia = msg.type === "text" ? String(msg.text?.body || "").slice(0, 80) : `(${msg.type})`;
-  console.log(`📩 Mensaje de +${from}: ${vistaPrevia}`);
+  // Log mínimo: tipo de mensaje y seudónimo del número, nunca el contenido
+  console.log(`📩 Mensaje (${msg.type}) de ${id}`);
 
   // Regla: números personales protegidos → silencio total
   if (PERSONAL_NUMBERS.includes(String(from).slice(-10))) {
-    console.log(`(silencio) Número protegido: ${from}`);
+    console.log(`(silencio) Número protegido`);
     return;
   }
 
   // Reinicio de conversación: más de 24 h sin actividad → conversación nueva
-  if (now - chat.lastActivity > DAY_MS) {
+  if (now - chat.lastActivity > priv.HISTORIAL_TTL_MS) {
     chat.history = [];
     chat.humanUntil = 0;
+    chat.avisoEnviado = false;
+    chat.citaLocalizada = null;
   }
   chat.lastActivity = now;
 
   // Regla: conversación en manos humanas (la última palabra manda)
   if (chat.humanUntil > now) {
-    console.log(`(silencio) Chat en manos humanas: ${from}`);
+    console.log(`(silencio) Chat en manos humanas: ${id}`);
     return;
   }
 
@@ -339,8 +389,8 @@ async function processMessage(msg, value) {
     try {
       const respuesta = await recordatorios.procesarRespuestaBoton(from, textoBoton);
       if (respuesta) {
-        console.log(`🔘 Botón "${textoBoton}" de +${from}`);
-        await sendWhatsAppText(from, respuesta);
+        console.log(`🔘 Respuesta a confirmación de ${id}`);
+        await enviarAlPaciente(chat, from, respuesta);
         chat.history.push(
           { role: "user", content: `[El paciente respondió "${textoBoton}" al mensaje de confirmación]` },
           { role: "assistant", content: respuesta }
@@ -354,21 +404,22 @@ async function processMessage(msg, value) {
     // Si no era Sí/No, se atiende como texto normal (abajo)
   }
 
-  let userText = null;
+  let userText = null;   // lo que recibiría la IA
+  let textoRevisar = ""; // lo que se revisa con los filtros de privacidad
 
   // ---- Clasificación por tipo de mensaje ----
   if (msg.type === "text") {
-    userText = msg.text.body;
+    userText = textoRevisar = msg.text.body;
 
   } else if (textoBoton) {
-    userText = textoBoton;
+    userText = textoRevisar = textoBoton;
 
   } else if (msg.type === "audio") {
-    // El paciente mandó una nota de voz: la transcribimos y la atendemos como texto
-    if (!AUDIO_ACTIVO) {
-      await sendWhatsAppText(from,
-        "¡Gracias por su mensaje de voz! 🎙️ Para atenderle más rápido, ¿me lo podría escribir en un mensaje de texto? " +
-        "Si prefiere no escribir, no se preocupe: escucharemos su mensaje con atención y le responderemos en cuanto nos sea posible 🙏");
+    // Las notas de voz suelen contener información clínica y no se pueden revisar
+    // antes de transcribirlas (transcribir ya es enviarlas a OpenAI). Mientras no haya
+    // un mecanismo de consentimiento validado, NO se descargan ni se transcriben.
+    if (!AUDIO_ACTIVO || !priv.PERMITIR_DATOS_SENSIBLES_IA) {
+      await responderFijo(chat, from, "audio", "Nota de voz para revisión del personal");
       return;
     }
 
@@ -377,42 +428,64 @@ async function processMessage(msg, value) {
       const transcripcion = await transcribirAudio(datos, tipo);
 
       if (!transcripcion || transcripcion.length < 2) {
-        console.log(`🎙️ Audio sin contenido entendible de +${from}`);
-        await sendWhatsAppText(from,
+        console.log(`🎙️ Audio sin contenido entendible de ${id}`);
+        await enviarAlPaciente(chat, from,
           "Disculpe, no logramos escuchar con claridad su mensaje de voz. " +
-          "¿Podría repetirlo o escribirnos por texto? 🙏");
+          "¿Podría repetirlo o escribirnos por texto?");
         return;
       }
 
-      console.log(`🎙️ Nota de voz de +${from} transcrita: "${transcripcion.slice(0, 120)}"`);
+      console.log(`🎙️ Nota de voz de ${id} transcrita (${transcripcion.length} caracteres)`);
       // Se marca como nota de voz para que el asistente sepa que puede venir con
       // errores de dictado y confirme los datos importantes (nombres, fechas).
       userText = `[Nota de voz del paciente, transcrita automáticamente]: ${transcripcion}`;
+      textoRevisar = transcripcion;
 
     } catch (e) {
       console.error("🎙️ No se pudo transcribir el audio:", e.message);
-      await sendWhatsAppText(from,
+      await enviarAlPaciente(chat, from,
         "Recibimos su mensaje de voz, pero no pudimos escucharlo en este momento. " +
-        "¿Podría escribirnos por texto lo que necesita? 🙏");
+        "¿Podría escribirnos por texto lo que necesita?");
       return;
     }
 
   } else if (msg.type === "image" || msg.type === "document" || msg.type === "video") {
+    // El bot nunca descarga ni analiza el archivo; solo considera el texto que lo acompaña.
     const caption = (msg[msg.type] && msg[msg.type].caption || "").trim();
     if (!caption || caption.length < 15) {
       // Documento/foto sin texto relevante → silencio (Ade los organiza)
-      console.log(`(silencio) ${msg.type} sin contexto de: ${from}`);
+      console.log(`(silencio) ${msg.type} sin texto de ${id}`);
       return;
     }
     userText = `[El paciente envió un(a) ${msg.type} acompañado de este texto]: ${caption}`;
+    textoRevisar = caption;
 
   } else {
     // Stickers, reacciones, ubicaciones, contactos, etc. → silencio
-    console.log(`(silencio) Tipo no atendido (${msg.type}) de: ${from}`);
+    console.log(`(silencio) Tipo no atendido (${msg.type}) de ${id}`);
     return;
   }
 
-  // ---- Consultar a la IA ----
+  // ---- Filtros de privacidad (ANTES de cualquier envío a OpenAI) ----
+  // Nada de lo que se ataja aquí se guarda en el historial ni se envía a la IA.
+  if (priv.esUrgencia(textoRevisar)) {
+    await responderFijo(chat, from, "urgencia", "Posible URGENCIA: se le indicó acudir a urgencias", { avisoDespues: true });
+    return;
+  }
+  if (priv.esBaja(textoRevisar)) {
+    await manejarBaja(chat, from);
+    return;
+  }
+  if (priv.esSolicitudPrivacidad(textoRevisar)) {
+    await responderFijo(chat, from, "privacidad", "Solicitud sobre datos personales (ARCO/privacidad). Atender según el procedimiento ARCO");
+    return;
+  }
+  if (!priv.PERMITIR_DATOS_SENSIBLES_IA && priv.contieneInformacionClinica(textoRevisar)) {
+    await responderFijo(chat, from, "clinico", "Mensaje con posible información de salud, para respuesta personal");
+    return;
+  }
+
+  // ---- Consultar a la IA (solo temas administrativos) ----
   let reply;
   try {
     reply = await askAI(chat, userText, from);
@@ -425,19 +498,21 @@ async function processMessage(msg, value) {
   // ---- Marcadores especiales ----
   if (reply.includes("[AVISAR_EQUIPO]")) {
     reply = reply.replace(/\[AVISAR_EQUIPO\]/g, "").trim();
-    await alertTeam(`Mensaje que requiere atención humana.\nDe: +${from}\nDijo: "${String(userText).slice(0, 300)}"`);
+    await alertTeam(
+      `Mensaje que requiere atención humana.\nChat: +${from}\nRevíselo en la app de WhatsApp Business.`,
+      `atención humana solicitada por la IA (${id})`);
   }
 
   if (reply.includes("[NO_RESPONDER]") || reply === "") {
-    console.log(`(silencio por decisión de la IA) ${from}`);
+    console.log(`(silencio por decisión de la IA) ${id}`);
     chat.history.push({ role: "user", content: userText });
     trimHistory(chat);
     return;
   }
 
   // ---- Responder ----
-  console.log(`💬 Respondiendo a +${from}: ${reply.slice(0, 80)}`);
-  await sendWhatsAppText(from, reply);
+  console.log(`💬 Respuesta de la IA enviada a ${id} (${reply.length} caracteres)`);
+  await enviarAlPaciente(chat, from, reply);
   chat.history.push({ role: "user", content: userText }, { role: "assistant", content: reply });
   trimHistory(chat);
 }
@@ -478,11 +553,11 @@ app.post("/webhook", (req, res) => {
           const to = echo.to;
           if (to) {
             const chat = getChat(to);
-            chat.humanUntil = Date.now() + DAY_MS;
+            chat.humanUntil = Date.now() + priv.HISTORIAL_TTL_MS;
             // También cuenta como actividad: si no, el reinicio por inactividad
             // (más de 24 h sin mensajes) borraba esta marca y el bot volvía a contestar.
             chat.lastActivity = Date.now();
-            console.log(`👤 Chat tomado por el equipo: ${to}`);
+            console.log(`👤 Chat tomado por el equipo: ${priv.idPaciente(to)}`);
           }
         }
 
@@ -493,7 +568,7 @@ app.post("/webhook", (req, res) => {
           if (processedIds.size > 1000) {
             processedIds.delete(processedIds.values().next().value);
           }
-          processMessage(msg, value).catch(e => console.error("Error procesando mensaje:", e));
+          processMessage(msg, value).catch(e => console.error("Error procesando mensaje:", priv.sanitizarLog(e && e.stack, 1000)));
         }
       }
     }
@@ -549,10 +624,18 @@ function iniciarRecordatorios() {
   console.log("🔔 Recordatorios automáticos ACTIVOS (revisión cada 15 minutos)");
 }
 
+// ---------- Conservación del historial temporal ----------
+// Cada 15 minutos se borran de memoria las conversaciones con más de 24 h sin actividad.
+const purgaHistorial = setInterval(() => {
+  const n = priv.purgarConversacionesInactivas(chats);
+  if (n) console.log(`🧹 ${n} conversación(es) inactiva(s) eliminada(s) de memoria`);
+}, 15 * 60 * 1000);
+purgaHistorial.unref();
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🩺 Bot del consultorio escuchando en el puerto ${PORT}`);
-  console.log(`⚙️  Modelo: ${MODEL} | Agenda: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | Recordatorios: ${RECORDATORIOS_ACTIVOS ? "ACTIVOS ✅" : "INACTIVOS ❌"} | Notas de voz: ${AUDIO_ACTIVO ? "ACTIVAS ✅" : "INACTIVAS ❌"}`);
+  console.log(`⚙️  Modelo: ${MODEL} | Agenda: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | Recordatorios: ${RECORDATORIOS_ACTIVOS ? "ACTIVOS ✅" : "INACTIVOS ❌"} | Notas de voz: ${AUDIO_ACTIVO && priv.PERMITIR_DATOS_SENSIBLES_IA ? "ACTIVAS ✅" : "NO SE TRANSCRIBEN 🛡️"} | Datos de salud a la IA: ${priv.PERMITIR_DATOS_SENSIBLES_IA ? "PERMITIDOS ⚠️" : "BLOQUEADOS 🛡️"} | Reseñas: ${recordatorios.RESENAS_ACTIVAS ? "ACTIVAS" : "APAGADAS"}`);
   iniciarRecordatorios();
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);

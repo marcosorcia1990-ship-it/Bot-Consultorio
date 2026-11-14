@@ -8,6 +8,7 @@
 // ============================================================
 
 const cal = require("./calendar");
+const { idEvento } = require("./privacidad");
 
 const TIMEZONE = "America/Mexico_City";
 const MAPS_LINK = "https://maps.app.goo.gl/Kzsq91rhYLpdCocv5";
@@ -21,13 +22,17 @@ const PLANTILLAS = {
 };
 const IDIOMA_PLANTILLA = process.env.TPL_LANG || "es_MX";
 
+// La solicitud de reseña no es indispensable para la atención: queda APAGADA salvo
+// que se active expresamente (y debe respetar la baja del paciente).
+const RESENAS_ACTIVAS = String(process.env.RESENAS_ACTIVAS || "").trim().toLowerCase() === "true";
+
 const H = 60 * 60 * 1000;
 
 // Regla heredada de Confirmafy: nunca enviar antes de las 7:30 am ni de noche.
-function horaPrudente() {
+function horaPrudente(fecha = new Date()) {
   const p = new Intl.DateTimeFormat("en-US", {
     timeZone: TIMEZONE, hour: "2-digit", minute: "2-digit", hour12: false
-  }).formatToParts(new Date());
+  }).formatToParts(fecha);
   const h = +p.find(x => x.type === "hour").value;
   const m = +p.find(x => x.type === "minute").value;
   const minutos = h * 60 + m;
@@ -35,13 +40,14 @@ function horaPrudente() {
 }
 
 // ---------- Ciclo principal (se ejecuta cada 15 min) ----------
-async function revisarYEnviar({ sendTemplate, alertTeam }) {
-  if (!horaPrudente()) return;
+async function revisarYEnviar({ sendTemplate, alertTeam, ahora = Date.now() }) {
+  if (!horaPrudente(new Date(ahora))) return;
 
-  const ahora = Date.now();
-  let citas;
+  let citas, sinAutomaticos;
   try {
     citas = await cal.listarCitasDelBot(new Date(ahora - 48 * H), new Date(ahora + 96 * H));
+    // Pacientes que respondieron BAJA: no reciben ningún mensaje automático
+    sinAutomaticos = await cal.telefonosSinAutomaticos();
   } catch (e) {
     console.error("No se pudieron leer las citas para recordatorios:", e.message);
     return;
@@ -55,9 +61,11 @@ async function revisarYEnviar({ sendTemplate, alertTeam }) {
     // y ahí el recordatorio nunca le llegaría.
     const destino = cita.telefonoWa || cita.telefono;
     if (!destino) {
-      console.warn(`⚠️ Sin número para recordatorio: ${cita.nombre} — ${cita.cuando}`);
+      console.warn(`⚠️ Sin número para recordatorio: ${idEvento(cita.id)}`);
       continue;
     }
+    const tels = [cita.telefonoWa, cita.telefono].map(t => String(t || "").replace(/\D/g, "").slice(-10));
+    if (cita.sinAutomaticos || tels.some(t => t && sinAutomaticos.has(t))) continue;
     const inicio = new Date(cita.inicio).getTime();
     const faltan = inicio - ahora;
     const pasaron = ahora - inicio;
@@ -70,7 +78,7 @@ async function revisarYEnviar({ sendTemplate, alertTeam }) {
           [cita.nombre || "paciente", cita.cuando], IDIOMA_PLANTILLA);
         await cal.marcarEnCita(cita.id, { confirmacionEnviada: "si", estado: "pendiente" });
         await cal.actualizarEstadoCita(cita.id, "PENDIENTE"); // amarillo
-        console.log(`📤 Confirmación enviada: ${cita.nombre} — ${cita.cuando}`);
+        console.log(`📤 Confirmación enviada: ${idEvento(cita.id)}`);
         continue;
       }
 
@@ -79,16 +87,16 @@ async function revisarYEnviar({ sendTemplate, alertTeam }) {
         await sendTemplate(destino, PLANTILLAS.recordatorio,
           [cita.nombre || "paciente", cita.cuando], IDIOMA_PLANTILLA);
         await cal.marcarEnCita(cita.id, { recordatorioEnviado: "si" });
-        console.log(`📤 Recordatorio enviado: ${cita.nombre} — ${cita.cuando}`);
+        console.log(`📤 Recordatorio enviado: ${idEvento(cita.id)}`);
         continue;
       }
 
       // --- 3. Seguimiento y reseña al día siguiente (12-36 h después) ---
-      if (!cita.resenaEnviada && !cancelada && pasaron > 12 * H && pasaron <= 36 * H) {
+      if (RESENAS_ACTIVAS && !cita.resenaEnviada && !cancelada && pasaron > 12 * H && pasaron <= 36 * H) {
         await sendTemplate(destino, PLANTILLAS.resena,
           [cita.nombre || "paciente"], IDIOMA_PLANTILLA);
         await cal.marcarEnCita(cita.id, { resenaEnviada: "si" });
-        console.log(`📤 Seguimiento y reseña enviados: ${cita.nombre}`);
+        console.log(`📤 Seguimiento y reseña enviados: ${idEvento(cita.id)}`);
         continue;
       }
 
@@ -97,14 +105,16 @@ async function revisarYEnviar({ sendTemplate, alertTeam }) {
         sinConfirmar.push(cita);
       }
     } catch (e) {
-      console.error(`Error en recordatorio de ${cita.nombre}:`, e.message);
+      console.error(`Error en recordatorio de ${idEvento(cita.id)}:`, e.message);
     }
   }
 
   // Aviso interno: citas próximas sin confirmar (el equipo decide si llama)
   if (sinConfirmar.length && alertTeam) {
     const lista = sinConfirmar.map(c => `- ${c.nombre}: ${c.cuando}`).join("\n");
-    await alertTeam(`Citas próximas SIN confirmar (amarillas):\n${lista}\n\nEl horario sigue reservado. Conviene llamarles.`);
+    // El aviso va al WhatsApp interno del equipo (necesita los nombres); en los logs solo el conteo.
+    await alertTeam(`Citas próximas SIN confirmar (amarillas):\n${lista}\n\nEl horario sigue reservado. Conviene llamarles.`,
+      `${sinConfirmar.length} cita(s) sin confirmar`);
   }
 }
 
@@ -131,7 +141,7 @@ async function procesarRespuestaBoton(telefono, textoBoton) {
 
   if (esSi) {
     await cal.actualizarEstadoCita(cita.id, "CONFIRMADA"); // verde
-    console.log(`✅ Cita CONFIRMADA: ${cita.nombre} — ${cita.cuando}`);
+    console.log(`✅ Cita CONFIRMADA: ${idEvento(cita.id)}`);
     return `Cita confirmada. Gracias por confirmar su cita con el Dr. Marco A. Mixteco.\n\n` +
            `Fecha y hora: ${cita.cuando}\n` +
            `Lugar: Sanatorio Santa Rita, Consultorio #5, Córdoba, Veracruz.\n` +
@@ -142,10 +152,10 @@ async function procesarRespuestaBoton(telefono, textoBoton) {
 
   // Cancelación: se marca en rojo y se LIBERA el horario para otro paciente
   await cal.cancelarCita(cita.id);
-  console.log(`❌ Cita CANCELADA y horario liberado: ${cita.nombre} — ${cita.cuando}`);
+  console.log(`❌ Cita CANCELADA y horario liberado: ${idEvento(cita.id)}`);
   return `Gracias por avisarnos. Su cita del ${cita.cuando} quedó cancelada.\n\n` +
          `Si desea reagendar, con gusto le ayudamos: indíquenos qué día le conviene y ` +
          `le compartimos los horarios disponibles.`;
 }
 
-module.exports = { revisarYEnviar, procesarRespuestaBoton, PLANTILLAS, horaPrudente };
+module.exports = { revisarYEnviar, procesarRespuestaBoton, PLANTILLAS, horaPrudente, RESENAS_ACTIVAS };

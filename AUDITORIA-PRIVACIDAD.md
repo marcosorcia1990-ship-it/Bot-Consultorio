@@ -1,5 +1,8 @@
 # Auditoría de privacidad del bot — 14 de noviembre de 2026
 
+> **Nota:** esta auditoría describe el código ANTES de los cambios de privacidad.
+> Para el estado actual ver `docs/PRIVACIDAD-CAMBIOS.md`.
+
 Revisión del código en la rama `ccr-aa25d197-be722x` (server.js, tools.js, calendar.js,
 recordatorios.js, alta.js, system-prompt.md). Describe lo que el código **hace hoy**, no
 lo que debería hacer. Lo que depende de proveedores externos o de la configuración de
