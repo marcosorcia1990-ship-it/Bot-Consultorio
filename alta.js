@@ -31,6 +31,12 @@ async function graph(ruta, { method = "GET", token, body } = {}) {
   return data;
 }
 
+// Muestra solo el inicio y el final del token
+function enmascarar(token) {
+  const t = String(token || "");
+  return t.length > 12 ? `${t.slice(0, 4)}…${t.slice(-4)}` : "****";
+}
+
 function paginaAlta() {
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -70,7 +76,16 @@ pre{white-space:pre-wrap;background:#f3f3f3;padding:12px;border-radius:8px}</sty
       fetch(location.pathname + "/terminar" + location.search, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code: resp.authResponse.code, ...datosSesion })
-      }).then(r => r.text()).then(t => { estado.textContent = t; });
+      }).then(async r => {
+        const tipo = r.headers.get("content-type") || "";
+        if (!tipo.includes("json")) { estado.textContent = await r.text(); return; }
+        const d = await r.json();
+        estado.textContent = d.texto;
+        const copiar = document.createElement("button");
+        copiar.textContent = "Copiar token";
+        copiar.onclick = () => navigator.clipboard.writeText(d.token).then(() => { copiar.textContent = "Token copiado"; });
+        estado.after(copiar);
+      });
     }, {
       config_id: ${JSON.stringify(CONFIG_ID)},
       response_type: "code",
@@ -136,12 +151,17 @@ function registrarRutas(app) {
       }
 
       console.log(`✅ Alta con coexistencia completada. WABA ${waba_id}, número ${phone_number_id}`);
-      res.send(
-        pasos.join("\n") + "\n\n" +
-        "LISTO. Copie estos valores en las variables de entorno de Render y reinicie el servicio:\n\n" +
-        `PHONE_NUMBER_ID=${phone_number_id}\n` +
-        `WHATSAPP_TOKEN=${token}\n\n` +
-        "No comparta este token con nadie. Cierre esta página al terminar.");
+      // El token NUNCA se muestra completo en pantalla (la página puede grabarse o
+      // fotografiarse): se enseña enmascarado y se copia con un botón.
+      res.json({
+        texto:
+          pasos.join("\n") + "\n\n" +
+          "LISTO. Copie estos valores en las variables de entorno de Render y reinicie el servicio:\n\n" +
+          `PHONE_NUMBER_ID=${phone_number_id}\n` +
+          `WHATSAPP_TOKEN=${enmascarar(token)}  (use el botón "Copiar token")\n\n` +
+          "No comparta este token con nadie. Cierre esta página al terminar.",
+        token
+      });
     } catch (e) {
       console.error("Error en el alta:", e.message);
       res.status(500).send(pasos.concat(`ERROR: ${e.message}`).join("\n"));
@@ -149,4 +169,4 @@ function registrarRutas(app) {
   });
 }
 
-module.exports = { registrarRutas };
+module.exports = { registrarRutas, enmascarar };

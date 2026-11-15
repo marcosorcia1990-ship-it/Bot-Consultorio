@@ -109,3 +109,11 @@ test("el aviso simplificado incluye responsable, finalidad, baja y enlace al avi
   assert.match(a, /BAJA/);
   assert.match(a, /https:\/\/internistamarco\.com\/privacidad/);
 });
+
+test("alta: el token se enmascara antes de mostrarse", () => {
+  const { enmascarar } = require("../alta");
+  const t = "EAAGabcdefghijklmnopqrstuvwxyz1234";
+  const m = enmascarar(t);
+  assert.ok(!m.includes("ghijklmnop"));
+  assert.ok(m.length < 12);
+});
