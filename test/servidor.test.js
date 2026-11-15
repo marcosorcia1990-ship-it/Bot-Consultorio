@@ -9,6 +9,12 @@ const os = require("node:os");
 const path = require("node:path");
 
 const RAIZ = path.join(__dirname, "..");
+
+// El simulador escribe el archivo mientras la prueba lo lee: una línea a medio escribir se ignora
+// (se leerá completa en la siguiente consulta).
+function leerLinea(l) {
+  try { return JSON.parse(l); } catch { return null; }
+}
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "bot-prueba-"));
 const MOCK_LOG = path.join(DIR, "llamadas.jsonl");
 const PUERTO = 39000 + Math.floor(Math.random() * 1000);
@@ -22,7 +28,7 @@ const TEXTOS_PRIVADOS = [];
 
 function llamadas() {
   if (!fs.existsSync(MOCK_LOG)) return [];
-  return fs.readFileSync(MOCK_LOG, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l));
+  return fs.readFileSync(MOCK_LOG, "utf8").trim().split("\n").filter(Boolean).map(leerLinea).filter(Boolean);
 }
 
 async function esperar(cond, ms = 4000) {

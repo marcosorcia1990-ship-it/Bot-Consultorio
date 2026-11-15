@@ -9,6 +9,12 @@ const path = require("node:path");
 const demo = require("../demo");
 
 const RAIZ = path.join(__dirname, "..");
+
+// El simulador escribe el archivo mientras la prueba lo lee: una línea a medio escribir se ignora
+// (se leerá completa en la siguiente consulta).
+function leerLinea(l) {
+  try { return JSON.parse(l); } catch { return null; }
+}
 const BASE_OK = {
   MODO_DEMO: "true",
   PHONE_NUMBER_ID: "1502573929596107",
@@ -73,7 +79,7 @@ function arrancar(envExtra) {
   proc.stderr.on("data", d => { salida += d; });
   const termino = new Promise(r => proc.on("exit", code => r(code)));
   const llamadas = () => fs.existsSync(MOCK_LOG)
-    ? fs.readFileSync(MOCK_LOG, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l)) : [];
+    ? fs.readFileSync(MOCK_LOG, "utf8").trim().split("\n").filter(Boolean).map(leerLinea).filter(Boolean) : [];
   return { proc, PORT, termino, llamadas, salida: () => salida };
 }
 
