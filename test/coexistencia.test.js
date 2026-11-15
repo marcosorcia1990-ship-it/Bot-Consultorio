@@ -25,7 +25,7 @@ async function arrancar(envExtra = {}) {
   const proc = spawn(process.execPath, ["--import", path.join(__dirname, "mock-fetch.mjs"), "server.js"], {
     cwd: RAIZ,
     env: { ...process.env, PORT, MOCK_LOG, LOG_SALT: "s", VERIFY_TOKEN: "vt", WHATSAPP_TOKEN: "t",
-      PHONE_NUMBER_ID: "1502573929596107", OPENAI_API_KEY: "k", INTERNAL_ALERT_NUMBER: "", AGENDA_ACTIVA: "false", ...envExtra }
+      PHONE_NUMBER_ID: "1502573929596107", OPENAI_API_KEY: "k", INTERNAL_ALERT_NUMBER: "", AGENDA_ACTIVA: "false", BOT_PAUSADO: "false", ...envExtra }
   });
   procesos.push(proc);
   let salida = "";
@@ -169,4 +169,12 @@ test("alta: sin sesión de administrador no se puede abrir", async () => {
   const s = await arrancar({ ADMIN_TOKEN: "clave-admin-larga", META_APP_ID: "1", META_APP_SECRET: "x", META_CONFIG_ID: "2" });
   const r = await fetch(s.url("/alta?token=vt"), { redirect: "manual" });
   assert.strictEqual(r.status, 302, "el token en la URL ya no sirve");
+});
+
+test("fuera de la demo, el bot arranca PAUSADO si no se indica BOT_PAUSADO=false", async () => {
+  const s = await arrancar({ BOT_PAUSADO: "" });
+  assert.match(s.salida(), /Bot PAUSADO/);
+  await s.webhook(mensaje("5212719090909", "Quiero una cita"));
+  assert.ok(await esperar(() => /Bot en pausa/.test(s.salida())));
+  assert.strictEqual(openai(s), 0);
 });

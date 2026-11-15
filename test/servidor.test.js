@@ -75,7 +75,7 @@ before(async () => {
       PORT: String(PUERTO), MOCK_LOG, LOG_SALT: "sal-de-prueba",
       VERIFY_TOKEN: "x", WHATSAPP_TOKEN: "t", PHONE_NUMBER_ID: "123", OPENAI_API_KEY: "k",
       INTERNAL_ALERT_NUMBER: ALERTAS, AGENDA_ACTIVA: "false", RECORDATORIOS_ACTIVOS: "false",
-      AUDIO_ACTIVO: "true", PERMITIR_DATOS_SENSIBLES_IA: ""
+      AUDIO_ACTIVO: "true", PERMITIR_DATOS_SENSIBLES_IA: "", BOT_PAUSADO: "false"
     }
   });
   servidor.stdout.on("data", d => { salida += d; });

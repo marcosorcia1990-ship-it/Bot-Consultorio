@@ -77,9 +77,11 @@ const INTERNAL_ALERT_NUMBER = process.env.INTERNAL_ALERT_NUMBER || "";
 const TPL_AVISO_EQUIPO = process.env.TPL_AVISO_EQUIPO || "";
 const TPL_LANG = process.env.TPL_LANG || "es_MX";
 
-// Interruptor de emergencia: con BOT_PAUSADO=true el bot no contesta a nadie
-// (sigue registrando cuando el equipo toma un chat).
-const BOT_PAUSADO = String(process.env.BOT_PAUSADO || "").trim().toLowerCase() === "true";
+// Interruptor: con el bot pausado no contesta a nadie (sigue registrando cuando el equipo
+// toma un chat). Fuera de la demo, el bot arranca PAUSADO salvo BOT_PAUSADO=false explícito:
+// así ningún despliegue ni la conexión inicial lo encienden por accidente.
+const valorPausa = String(process.env.BOT_PAUSADO ?? "").trim().toLowerCase();
+const BOT_PAUSADO = valorPausa === "true" || (valorPausa !== "false" && !demo.MODO_DEMO);
 
 // Cuánto calla el bot después de que una persona del equipo escribe en el chat
 const HUMANO_MS = (parseFloat(process.env.HUMANO_HORAS) || 24) * 60 * 60 * 1000;
@@ -763,7 +765,8 @@ const servidor = app.listen(PORT, () => {
   iniciarRecordatorios();
   iniciarEstado();
   if (demo.MODO_DEMO) verificarNumeroDemo();
-  if (BOT_PAUSADO) console.warn("⏸️ BOT_PAUSADO=true: el bot no contestará a nadie.");
+  if (BOT_PAUSADO) console.warn("⏸️ Bot PAUSADO: no contestará a nadie. Para encenderlo: BOT_PAUSADO=false en Render.");
+  else console.log("▶️ Bot ENCENDIDO (contesta a pacientes).");
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
   if (faltantes.length) console.warn("⚠️ Faltan variables de entorno:", faltantes.join(", "));
