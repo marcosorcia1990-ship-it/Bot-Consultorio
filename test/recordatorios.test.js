@@ -57,3 +57,15 @@ test("fuera del horario prudente no envía nada", async () => {
   await recordatorios.revisarYEnviar({ ...enviar, ahora: Date.parse("2026-11-16T08:00:00Z") }); // 2:00 am
   assert.strictEqual(enviados.length, 0);
 });
+
+test("recordatorio: NO sale la noche anterior (caso real del 12 de agosto de 2026)", async () => {
+  // Cita: jueves 13 de agosto, 10:00 (México). Revisión: miércoles 12, 20:07 (México).
+  const cita13 = Date.parse("2026-08-13T16:00:00Z");
+  citas = [{ id: "r1", nombre: "Paciente", cuando: "x", telefono: "2711111111", telefonoWa: "5212711111111",
+    inicio: new Date(cita13), estado: "confirmada", confirmacionEnviada: true }];
+  await recordatorios.revisarYEnviar({ ...enviar, ahora: Date.parse("2026-08-13T02:07:00Z") });
+  assert.strictEqual(enviados.length, 0);
+  // El mismo jueves a las 7:45 (México) sí sale
+  await recordatorios.revisarYEnviar({ ...enviar, ahora: Date.parse("2026-08-13T13:45:00Z") });
+  assert.deepStrictEqual(enviados.map(e => e.plantilla), ["recordatorio_cita"]);
+});

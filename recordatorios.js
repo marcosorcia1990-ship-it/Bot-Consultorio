@@ -28,6 +28,12 @@ const RESENAS_ACTIVAS = String(process.env.RESENAS_ACTIVAS || "").trim().toLower
 
 const H = 60 * 60 * 1000;
 
+// Fecha (AAAA-MM-DD) en la zona horaria del consultorio
+function fechaMX(ms) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: TIMEZONE, year: "numeric", month: "2-digit", day: "2-digit" })
+    .format(new Date(ms));
+}
+
 // Regla heredada de Confirmafy: nunca enviar antes de las 7:30 am ni de noche.
 function horaPrudente(fecha = new Date()) {
   const p = new Intl.DateTimeFormat("en-US", {
@@ -82,8 +88,10 @@ async function revisarYEnviar({ sendTemplate, alertTeam, ahora = Date.now() }) {
         continue;
       }
 
-      // --- 2. Recordatorio del día de la cita (ventana 0-14 h antes) ---
-      if (!cita.recordatorioEnviado && !cancelada && faltan > 0 && faltan <= 14 * H) {
+      // --- 2. Recordatorio EL MISMO DÍA de la cita (desde las 7:30 am, hora de México) ---
+      // Antes usaba "14 h antes" y, para citas de la mañana, salía la noche anterior
+      // diciendo "su cita de hoy" (se vio en la prueba real del 12 de agosto de 2026).
+      if (!cita.recordatorioEnviado && !cancelada && faltan > 0 && fechaMX(inicio) === fechaMX(ahora)) {
         await sendTemplate(destino, PLANTILLAS.recordatorio,
           [cita.nombre || "paciente", cita.cuando], IDIOMA_PLANTILLA);
         await cal.marcarEnCita(cita.id, { recordatorioEnviado: "si" });
@@ -158,4 +166,4 @@ async function procesarRespuestaBoton(telefono, textoBoton) {
          `le compartimos los horarios disponibles.`;
 }
 
-module.exports = { revisarYEnviar, procesarRespuestaBoton, PLANTILLAS, horaPrudente, RESENAS_ACTIVAS };
+module.exports = { revisarYEnviar, procesarRespuestaBoton, PLANTILLAS, horaPrudente, RESENAS_ACTIVAS, fechaMX };

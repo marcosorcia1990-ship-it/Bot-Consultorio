@@ -10,12 +10,10 @@ Commit a desplegar: el que se indique en `INFORME-EJECUTIVO.md` (rama `ccr-aa25d
 - **Riesgo residual:** si Meta ignorara el desvío, los eventos del número de prueba irían a la URL general (producción, código viejo y calendario real). Por eso el paso 4.3 obliga a **comprobar el desvío antes de enviar cualquier mensaje** y, si no aparece, a quitar la suscripción de inmediato.
 
 ## 1. Preparación en Google (unos 15 minutos)
-1. **Dos calendarios nuevos** en Google Calendar (Otros calendarios → + → Crear calendario):
-   - `Demo bot (pruebas)`: citas ficticias.
-   - `Demo bot – estado`: registro técnico de chats tomados por el equipo.
+1. **Un calendario nuevo** en Google Calendar (Otros calendarios → + → Crear calendario): `Demo bot (pruebas)`. Sirve para las citas ficticias **y** para el registro de estado. Está comprobado que los registros de estado no cuentan como citas ni ocupan horario.
 2. **Cuenta de servicio nueva** `bot-demo` en Google Cloud (IAM → Cuentas de servicio). Sin roles. Claves → Agregar clave → JSON.
-3. **Compartir los dos calendarios** con el correo de `bot-demo`, con permiso "Hacer cambios en los eventos".
-4. Copiar el **ID** de cada calendario (Configuración → Integrar calendario). Deben terminar en `@group.calendar.google.com`.
+3. **Compartir el calendario** con el correo de `bot-demo`, con permiso "Hacer cambios en los eventos".
+4. Copiar su **ID** (Configuración → Integrar calendario). Debe terminar en `@group.calendar.google.com`. Va en `CALENDAR_ID`, `CALENDARS_BUSY` y `ESTADO_CALENDAR_ID`.
 5. **Comprobación obligatoria:** en `internista.marco@gmail.com` → Configuración → Compartir con personas específicas, `bot-demo` **no** debe aparecer.
 
 ## 2. Preparación en OpenAI y Meta (5 minutos)
@@ -49,23 +47,23 @@ Commit a desplegar: el que se indique en `INFORME-EJECUTIVO.md` (rama `ccr-aa25d
    - **Si no aparece el desvío: pulse "Quitar la suscripción" y avíseme.** No envíe mensajes.
 4. En los logs de la demo debe aparecer `✅ Webhook verificado por Meta`, porque Meta comprueba la URL del desvío.
 
-## 5. Prueba real de extremo a extremo
-Estas son pruebas reales con Meta, Google y OpenAI. Las automáticas de `npm test` simulan esos servicios y no las sustituyen.
+## 5. Prueba real mínima (y grabación en la misma sesión)
+Entre julio y agosto ya quedó comprobado en real que el bot agenda, reprograma, cancela, consulta Google Calendar y envía plantillas (`docs/EVIDENCIA-JULIO-AGOSTO-2026.md`). Ese código (`tools.js` y el núcleo de `calendar.js`) **no cambió**, así que **no se repite**. Solo se prueba lo nuevo o lo modificado.
 
-| # | Acción | Resultado esperado | Dónde comprobar |
+| # | Qué se prueba (y por qué) | Acción | Resultado esperado |
 |---|---|---|---|
-| R1 | Desde "Equipo", escribir "hola" al número de prueba | Sin respuesta (número protegido). Se abre la ventana de 24 h para recibir alertas | Teléfono "Equipo" y log `(silencio) Número protegido` |
-| R2 | Desde "Paciente demo": "Hola, ¿cuánto cuesta la consulta?" | Aviso simplificado + costos | Teléfono y logs `📩` y `💬` |
-| R3 | "Quiero agendar una cita" → primera vez, medicina interna → elegir horario → "Juan Prueba Demo, a este mismo número" → confirmar | Mensaje CITA CONFIRMADA | Teléfono |
-| R4 | — | Evento "Consulta – Juan Prueba Demo (1ª vez)" | Calendario "Demo bot (pruebas)" |
-| R5 | "Tengo fiebre, ¿qué medicamento puedo tomar?" | Texto fijo sin IA + alerta en "Equipo" | Los dos teléfonos y log `🛡️ Respuesta fija "clinico"` |
-| R6 | Desde un **tercer** teléfono que no esté en `DEMO_DESTINATARIOS`: "Hola" | Sin respuesta; el mensaje no llega a OpenAI | Log `⛔ MODO DEMO: mensaje de p-… descartado` |
-| R7 | "Quiero cambiar mi cita al día siguiente" | El evento de R4 se mueve | Calendario de demo |
-| R8 | "Ya no podré ir, cancélela" (sin reprogramar) | El evento queda en rojo (cancelado) | Calendario de demo |
-| R9 | Render → Manual Deploy → Restart | Vuelven a aparecer las 3 líneas del paso 3.5 | Logs |
-| R10 | Revisar los logs completos de la prueba | No aparecen textos de mensajes, nombres ni números completos | Logs |
+| P1 | Desvío por WABA (nuevo) | Paso 4 completo | El desvío aparece en el panel y Meta verifica la URL |
+| P2 | Flujo de mensajes reescrito + aviso simplificado | "Paciente demo": "Hola, ¿cuánto cuesta la consulta?" | Aviso + costos; en los logs `📩` y `💬` sin texto |
+| P3 | Agenda con el flujo nuevo y la validación de nombre | "Quiero agendar una cita" → primera vez, medicina interna → horario → "Juan Prueba Demo, a este mismo número" | CITA CONFIRMADA y el evento en el calendario de demo |
+| P4 | Filtro clínico y alerta al equipo (nunca probada en real) | Antes, "Equipo" escribe "hola" (abre la ventana de 24 h). Luego "Paciente demo": "Tengo fiebre, ¿qué medicamento puedo tomar?" | Texto fijo sin IA y alerta en "Equipo" |
+| P5 | Candado de remitentes (nuevo) | Un tercer teléfono que no esté en la lista: "Hola" | Sin respuesta; log `⛔ … descartado` |
+| P6 | Estado persistente tras reiniciar (nuevo) | Render → Restart | Vuelven las 3 líneas del paso 3.5, incluida `💾 Estado persistente activo` |
 
-**Lo que este entorno no puede probar:** que el bot calle cuando el equipo contesta desde la app (los ecos de coexistence). El número de prueba no se puede usar en la app WhatsApp Business. Eso está cubierto solo por pruebas automáticas (`test/coexistencia.test.js`, `test/estado.test.js`) hasta la conexión real.
+**Para no hacer dos veces el trabajo:** haga P1 a P6 una vez sin grabar. Si todo sale bien, **grabe en la misma sesión** P2 a P4 para el video de `whatsapp_business_messaging`, y el panel (P1) para `whatsapp_business_management` (guiones en `docs/META-REVISION-PERMISOS.md`).
+
+**No se repite:** reprogramar, cancelar ni buscar por nombre (código sin cambios y comprobado en julio). Si quiere más seguridad, una reprogramación más toma 1 minuto.
+
+**No se puede probar aquí:** los ecos de coexistence y la plantilla de confirmación con botones. Se prueban después de conectar el número real, en el **modo sombra** (`docs/COEXISTENCIA-PRODUCCION.md`).
 
 ## 6. Al terminar o ante cualquier duda
 - **Desconectar la demo:** `/admin/whatsapp` → "Quitar la suscripción". El número de prueba deja de enviar eventos a la demo.

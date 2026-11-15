@@ -29,7 +29,7 @@ siguen sirviendo como referencia visual.
 ### Guion del video (3 a 4 minutos)
 Siga las escenas 1 a 7 de `DEMO-REVISION-META.md` con estos ajustes:
 - **Escena 1:** muestre `/admin/whatsapp` de la demo (número +1 555, desvío de la WABA a la demo), en lugar de la pantalla de configuración de Meta.
-- La prueba real R2 a R5 de `RENDER-DEMO.md` **es** el contenido del video. Grabe solo después de haberla hecho completa una vez sin grabar.
+- Las pruebas P2 a P4 de `RENDER-DEMO.md` **es** el contenido del video. Grabe solo después de haberla hecho completa una vez sin grabar.
 
 ## 3. `whatsapp_business_management`
 

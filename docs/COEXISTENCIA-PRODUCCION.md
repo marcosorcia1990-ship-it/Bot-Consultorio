@@ -23,7 +23,7 @@ Nada de esto se ha hecho. Es el plan listo para usarse.
 - El historial temporal de la conversación se pierde al reiniciar: el paciente puede tener que repetir el último dato. El silencio humano **no** se pierde.
 
 ## Plan de puesta en marcha ("modo sombra")
-Requisitos: permisos aprobados y la prueba real de la demo (`RENDER-DEMO.md`, R1 a R10) completa.
+Requisitos: permisos aprobados y la prueba real de la demo (`RENDER-DEMO.md`, P1 a P6) completa.
 
 1. **Calendario de estado de producción:** cree `Bot consultorio – estado` y compártalo con la cuenta de servicio de producción. **No** use el calendario de citas.
 2. **Plantillas:** se crean **después** de conectar el número, porque requieren la WABA (ver `PLANTILLAS-WHATSAPP.md`).
@@ -34,7 +34,7 @@ Requisitos: permisos aprobados y la prueba real de la demo (`RENDER-DEMO.md`, R1
    - `META_APP_ID`, `META_APP_SECRET`, `META_CONFIG_ID` y `ALTA_MODO=coexistencia`;
    - **sin** `MODO_DEMO`.
 4. **Conexión:** abra `/alta` en producción → Embedded Signup → escanee el código QR con la app WhatsApp Business del consultorio → acepte compartir el historial. Copie `WABA_ID`, `PHONE_NUMBER_ID` y el token (con el botón) a Render y reinicie.
-5. **Modo sombra (1 o 2 días):** con `BOT_PAUSADO=true`, compruebe en los logs que llegan los mensajes (`📩`) y los ecos cuando Ade contesta (`👤 Chat tomado por el equipo`), y en `/admin/whatsapp` el estado del número. El bot no contesta nada.
+5. **Modo sombra (1 o 2 días)**, que es además la única prueba posible de lo que no se puede probar con el número de prueba (ecos de la app, plantilla de confirmación con botones): con `BOT_PAUSADO=true`, compruebe en los logs que llegan los mensajes (`📩`) y los ecos cuando Ade contesta (`👤 Chat tomado por el equipo`), y en `/admin/whatsapp` el estado del número. El bot no contesta nada.
 6. **Encendido:** `BOT_PAUSADO=false`. Haga primero pruebas con teléfonos de la familia, después horario normal.
 7. **Recordatorios:** cuando las plantillas estén aprobadas, `RECORDATORIOS_ACTIVOS=true`.
 

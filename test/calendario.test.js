@@ -116,3 +116,25 @@ test("citasDelBotAnterioresA excluye manuales y anonimizadas", async () => {
   const r = await cal.citasDelBotAnterioresA(new Date("2027-01-01"));
   assert.deepStrictEqual(r.map(e => e.id).sort(), ["a1", "b1"]);
 });
+
+test("crear_cita rechaza nombres inventados o provisionales (caso real del 12 de agosto de 2026)", () => {
+  const { nombreValido } = require("../tools");
+  for (const n of ["[Paciente de seguimiento]", "Paciente", "paciente nuevo", "Nombre Apellido", "Juan", "", "Alma 2711403390"]) {
+    assert.strictEqual(nombreValido(n), false, n);
+  }
+  for (const n of ["Alma Andrade", "Juan Prueba Demo", "María José Núñez Ruiz", "Lolis Loliana"]) {
+    assert.strictEqual(nombreValido(n), true, n);
+  }
+});
+
+test("un solo calendario de demo: los registros de estado no cuentan como citas ni ocupan horario", async () => {
+  eventos.push({
+    id: "est1", summary: "Chat atendido por el equipo (bot en silencio)", transparency: "transparent",
+    start: { dateTime: "2026-12-01T17:00:00Z" }, end: { dateTime: "2026-12-02T17:00:00Z" },
+    extendedProperties: { private: { tipo: "chat-humano", chat: "abc123" } }
+  });
+  const todas = await cal.listarTodasLasCitas(new Date("2026-01-01"), new Date("2027-01-01"));
+  assert.ok(!todas.some(c => c.id === "est1"));
+  const delBot = await cal.citasDelBotAnterioresA(new Date("2027-01-01"));
+  assert.ok(!delBot.some(c => c.id === "est1"));
+});

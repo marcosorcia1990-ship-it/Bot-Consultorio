@@ -3,6 +3,9 @@
 Fecha: 15 de noviembre de 2026. Rama: `ccr-aa25d197-be722x`. Producción (`main` y Render
 `bot-consultorio-1ggd`) **no se modificó**.
 
+## Actualización (15 de noviembre de 2026, noche): evidencia de julio y agosto
+La conversación exportada con el número de prueba anterior (+1 555 188 9369) demuestra que `main` (`3de77fe`) funcionó en real del 21 de julio al 14 de agosto: agenda, reprogramación, cancelación, Google Calendar y plantillas de recordatorio y reseña. Ese código no cambió, así que **no se vuelve a probar**: la prueba real se reduce a P1 a P6 (`docs/RENDER-DEMO.md`) y se graba en la misma sesión. La conversación también reveló dos fallos que ya están corregidos: el recordatorio salía la noche anterior y una cita se creó a nombre de "[Paciente de seguimiento]". Detalle en `docs/EVIDENCIA-JULIO-AGOSTO-2026.md`.
+
 ## Hallazgos que cambian el plan
 1. **La coexistence exige ser Tech Provider** (o pagar a un proveedor). La revisión de `whatsapp_business_messaging` y `whatsapp_business_management` es obligatoria (`docs/META-REVISION-PERMISOS.md`).
 2. **Embedded Signup v2/v3 se retiró en octubre de 2026.** La configuración debe ser v4. El código ya maneja el evento v4, que puede traer solo `waba_id`.
@@ -22,7 +25,7 @@ Solo pruebas automáticas (`npm test`): **80 de 80**, repetidas 12 veces sin fal
 | Agenda: anonimización, BAJA, conservación, scripts ARCO; recordatorios con BAJA y reseñas apagadas | calendario (7), scripts (8), recordatorios (5) |
 
 ## 2. Implementado pero no probado con Meta (falta la prueba real)
-- Conversación real con el número de prueba, agenda en un calendario real de Google y respuestas reales de OpenAI (prueba R1 a R10 de `docs/RENDER-DEMO.md`).
+- Conversación real con el número de prueba, agenda en un calendario real de Google y respuestas reales de OpenAI (prueba mínima P1 a P6 de `docs/RENDER-DEMO.md`).
 - La suscripción con desvío desde `/admin/whatsapp`, y que Meta respete el desvío.
 - Embedded Signup v4 con coexistence (`/alta`).
 - Los ecos reales de la app WhatsApp Business y el silencio persistente con el calendario de estado real.
@@ -50,12 +53,12 @@ Solo pruebas automáticas (`npm test`): **80 de 80**, repetidas 12 veces sin fal
 - grabar los dos videos y enviar la solicitud con los textos de `docs/META-REVISION-PERMISOS.md`.
 
 **En Render (10 min):** crear `bot-consultorio-demo` con `.env.demo.example` (§3) y conectar el número desde `/admin/whatsapp` (§4).
-**Prueba real:** R1 a R10 (§5). Mándeme los resultados.
+**Prueba real mínima:** P1 a P6 (§5), grabando en la misma sesión. Mándeme los resultados.
 **Opcional, recomendado:** `RECORDATORIOS_ACTIVOS=false` en producción.
 
 ## 6. Camino más corto y seguro
 1. **Hoy:** preparar Google, OpenAI y Render y conectar la demo (unos 45 minutos de su tiempo).
-2. **Hoy o mañana:** prueba real R1 a R10. Si algo falla, lo corrijo con los logs.
+2. **Hoy o mañana:** prueba mínima P1 a P6 y grabación en la misma sesión. Si algo falla, lo corrijo con los logs.
 3. **Grabar los dos videos** y enviar la revisión de los dos permisos y la verificación Tech Provider.
 4. **Mientras Meta revisa:** publicar el aviso de privacidad (con los espacios llenos) y resolver con el abogado la base jurídica de los datos de salud.
 5. **Con la aprobación:** pull request a `main` con `BOT_PAUSADO=true` → `/alta` con la app WhatsApp Business del consultorio → 1 o 2 días en modo sombra → encender → plantillas → recordatorios (`docs/COEXISTENCIA-PRODUCCION.md`).
