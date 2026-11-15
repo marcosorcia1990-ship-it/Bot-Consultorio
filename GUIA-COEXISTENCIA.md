@@ -1,3 +1,5 @@
+> **Documento reemplazado** (15 de noviembre de 2026). Para la operación vigente ver `docs/RENDER-DEMO.md`, `docs/META-REVISION-PERMISOS.md`, `docs/COEXISTENCIA-PRODUCCION.md` e `INFORME-EJECUTIVO.md`. Se conserva como historial.
+
 # Guía: conectar el bot sin dejar la app WhatsApp Business
 
 Objetivo: el número del consultorio sigue en la app de su teléfono (usted y Ade ven todo y

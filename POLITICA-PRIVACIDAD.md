@@ -50,6 +50,7 @@ Estos proveedores procesan la información en servidores ubicados fuera de Méxi
 6. Cuánto tiempo conservamos sus datos
 - Conversación con el asistente: el asistente guarda sus mensajes administrativos más recientes solo en la memoria del servidor, sin base de datos, para dar continuidad a la conversación. Se eliminan a más tardar 24 horas después de su último mensaje, o antes si el servidor se reinicia.
 - Conversaciones de WhatsApp: permanecen en la aplicación WhatsApp Business del consultorio hasta que el personal las elimina.
+- Registro de atención personal: cuando alguien del consultorio responde personalmente, guardamos un identificador cifrado de la conversación (no su número de teléfono ni el contenido) y el periodo durante el cual el asistente no debe intervenir. Este registro se elimina automáticamente a más tardar un día después de que vence ese periodo.
 - Citas: los datos de sus citas, incluidas las canceladas, se conservan en la agenda del consultorio. Actualmente no se eliminan de forma automática. [PLAZO DE CONSERVACIÓN DEFINIDO POR EL RESPONSABLE]
 - Registros técnicos: se conservan durante el plazo que establece nuestro proveedor de servidor y después se eliminan.
 - Expediente clínico: si usted acude a consulta, su expediente clínico se lleva por separado y se conserva durante el plazo que establece la normatividad sanitaria. Este aviso se refiere a la atención por WhatsApp y a la agenda de citas.

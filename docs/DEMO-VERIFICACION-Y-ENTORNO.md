@@ -1,3 +1,5 @@
+> **Documento reemplazado** (15 de noviembre de 2026). Para la operación vigente ver `docs/RENDER-DEMO.md`, `docs/META-REVISION-PERMISOS.md`, `docs/COEXISTENCIA-PRODUCCION.md` e `INFORME-EJECUTIVO.md`. Se conserva como historial.
+
 # Demo para la revisión de Meta: verificación, entorno y evidencia
 
 Complementa `DEMO-REVISION-META.md`. Va en fases. **No avance a la siguiente sin terminar la anterior.**

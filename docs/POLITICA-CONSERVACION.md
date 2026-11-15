@@ -13,6 +13,12 @@ Este documento distingue entre lo que ya está **implementado** y lo que requier
   - Excepción: si el equipo tomó el chat, se conserva mientras dure esa marca (24 h desde la última intervención humana), para que el bot no vuelva a hablar.
 - **No contiene** mensajes clínicos ni notas de voz: esos no entran al historial.
 
+## 1 bis. Registro de "chat atendido por el equipo": IMPLEMENTADO — vence + 1 día
+
+- **Qué es:** un evento en un calendario de estado dedicado (`ESTADO_CALENDAR_ID`) con un HMAC del número (no el número ni el contenido) y el periodo en que el bot debe callar (24 h por omisión, `HUMANO_HORAS`).
+- **Para qué:** que el bot no conteste encima de una persona, incluso después de un reinicio del servidor.
+- **Plazo:** se borra automáticamente cuando lleva un día vencido (depuración cada 6 horas).
+
 ## 2. Citas en Google Calendar: PENDIENTE DE DECISIÓN
 
 - **Situación actual:** se conservan indefinidamente. Las canceladas tampoco se borran.

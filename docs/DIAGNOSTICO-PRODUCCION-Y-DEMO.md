@@ -1,3 +1,5 @@
+> **Documento reemplazado** (15 de noviembre de 2026). Para la operación vigente ver `docs/RENDER-DEMO.md`, `docs/META-REVISION-PERMISOS.md`, `docs/COEXISTENCIA-PRODUCCION.md` e `INFORME-EJECUTIVO.md`. Se conserva como historial.
+
 # Diagnóstico: producción (main) frente a la rama de trabajo, y entorno de demo seguro
 
 Fecha: 15 de noviembre de 2026. Solo lectura: no se hizo merge, ni despliegue, ni cambio en producción.

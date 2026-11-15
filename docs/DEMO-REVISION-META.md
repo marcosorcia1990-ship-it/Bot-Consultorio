@@ -1,3 +1,5 @@
+> **Documento reemplazado** (15 de noviembre de 2026). Para la operación vigente ver `docs/RENDER-DEMO.md`, `docs/META-REVISION-PERMISOS.md`, `docs/COEXISTENCIA-PRODUCCION.md` e `INFORME-EJECUTIVO.md`. Se conserva como historial.
+
 # Video para la revisión de Meta: permiso `whatsapp_business_messaging`
 
 Objetivo: grabar el funcionamiento real del bot con el **número de prueba de WhatsApp Cloud API**,
