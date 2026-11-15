@@ -93,9 +93,16 @@ revocar al terminar sin afectar nada más.
 | `INTERNAL_ALERT_NUMBER` | El teléfono "Equipo" (52 + 10 dígitos) |
 | `PERSONAL_NUMBERS` | El mismo teléfono "Equipo" (10 dígitos) |
 | `LOG_SALT` | Una cadena aleatoria |
+| `MODO_DEMO` | `true` (activa los candados; ver `DIAGNOSTICO-PRODUCCION-Y-DEMO.md`) |
+| `DEMO_DESTINATARIOS` | Los teléfonos "Paciente demo" y "Equipo", separados por comas |
+| `CALENDARIOS_PROHIBIDOS` | `internista.marco@gmail.com` |
+
+En **Settings → Auto-Deploy**, póngalo en **No**: así la demo no se vuelve a desplegar sola con cada cambio en la rama.
 
 Al terminar el despliegue, abra `https://bot-consultorio-demo….onrender.com/`. Debe decir
-"Bot del consultorio: en línea". En **Logs** debe aparecer `Datos de salud a la IA: BLOQUEADOS`.
+"Bot del consultorio: en línea". En **Logs** deben aparecer `Datos de salud a la IA: BLOQUEADOS` y
+`🧪 MODO DEMO: número de origen verificado como número de prueba (+1 555…)`. Si aparece `⛔ MODO DEMO`,
+el servidor se detuvo a propósito: lea el motivo en el log.
 **Todavía no recibe mensajes:** el webhook sigue apuntando al servicio actual.
 
 ### 2E. Números de prueba

@@ -25,6 +25,10 @@ globalThis.fetch = async (url, opciones = {}) => {
     registrar({ destino: "whatsapp_envio", cuerpo });
     return respuesta({ messages: [{ id: "wamid.prueba" }] });
   }
+  if (u.includes("graph.facebook.com") && u.includes("fields=display_phone_number")) {
+    registrar({ destino: "whatsapp_consulta_numero" });
+    return respuesta({ display_phone_number: process.env.MOCK_DISPLAY || "+1 555-184-4654", id: "123" });
+  }
   if (u.includes("graph.facebook.com")) {
     registrar({ destino: "whatsapp_media", url: u });
     return respuesta({ url: "https://lookaside.prueba/audio", mime_type: "audio/ogg" });

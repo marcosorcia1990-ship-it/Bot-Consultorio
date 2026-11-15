@@ -10,6 +10,32 @@ const { TOOLS, ejecutarHerramienta } = require("./tools");
 const recordatorios = require("./recordatorios");
 const cal = require("./calendar");
 const priv = require("./privacidad");
+const demo = require("./demo");
+
+// Modo demostración: si la configuración no es segura, el servidor no arranca.
+if (demo.MODO_DEMO) {
+  const errores = demo.validarConfiguracionDemo();
+  if (errores.length) {
+    console.error("⛔ MODO DEMO: configuración insegura, el servidor NO arranca:\n- " + errores.join("\n- "));
+    process.exit(1);
+  }
+}
+
+// En modo demo nada sale hasta confirmar que PHONE_NUMBER_ID es un número de prueba (+1 555…)
+let demoNumeroVerificado = false;
+
+function envioBloqueadoPorDemo(to) {
+  if (!demo.MODO_DEMO) return false;
+  if (!demoNumeroVerificado) {
+    console.error("⛔ MODO DEMO: envío bloqueado, el número de origen aún no se verifica como número de prueba.");
+    return true;
+  }
+  if (!demo.destinoPermitido(to)) {
+    console.error(`⛔ MODO DEMO: envío bloqueado a ${priv.idPaciente(to)} (no está en DEMO_DESTINATARIOS).`);
+    return true;
+  }
+  return false;
+}
 const alta = require("./alta");
 
 const app = express();
@@ -73,6 +99,7 @@ function nowInCordoba() {
 }
 
 async function sendWhatsAppText(to, body) {
+  if (envioBloqueadoPorDemo(to)) return;
   // Fix para números mexicanos: WhatsApp entrega el número como 521XXXXXXXXXX
   // pero la API lo espera como 52XXXXXXXXXX (sin el "1" extra tras la lada 52).
   // Sin esto, los envíos a México fallan con error 131030.
@@ -102,6 +129,7 @@ async function sendWhatsAppText(to, body) {
 
 // Envía una plantilla aprobada por Meta (necesaria para iniciar conversación)
 async function sendWhatsAppTemplate(to, plantilla, idioma, componentes = []) {
+  if (envioBloqueadoPorDemo(to)) throw new Error("Envío bloqueado por el modo demo");
   let dest = String(to).replace(/\D/g, "");
   if (dest.startsWith("521") && dest.length === 13) dest = "52" + dest.slice(3);
   if (dest.length === 10) dest = "52" + dest;
@@ -133,6 +161,7 @@ async function sendWhatsAppTemplate(to, plantilla, idioma, componentes = []) {
 
 // Envía una plantilla aprobada por Meta (necesaria para mensajes que inicia el negocio)
 async function sendTemplate(to, nombrePlantilla, parametros = [], idioma = "es_MX") {
+  if (envioBloqueadoPorDemo(to)) throw new Error("Envío bloqueado por el modo demo");
   let dest = String(to);
   if (dest.startsWith("521") && dest.length === 13) dest = "52" + dest.slice(3);
 
@@ -561,8 +590,21 @@ app.post("/webhook", (req, res) => {
           }
         }
 
+        // Modo demo: solo se procesan eventos del número de prueba configurado.
+        // Cualquier otro (por ejemplo, de un número real) se descarta sin leerlo.
+        if (demo.MODO_DEMO && (value.messages || []).length &&
+            String(value.metadata && value.metadata.phone_number_id) !== String(PHONE_NUMBER_ID)) {
+          console.error("⛔ MODO DEMO: evento de otro número descartado sin procesar.");
+          continue;
+        }
+
         // Mensajes entrantes de pacientes
         for (const msg of (value.messages || [])) {
+          // Modo demo: solo teléfonos de prueba autorizados; el resto no se procesa ni va a OpenAI
+          if (demo.MODO_DEMO && !demo.destinoPermitido(msg.from)) {
+            console.error(`⛔ MODO DEMO: mensaje de ${priv.idPaciente(msg.from)} descartado (no está en DEMO_DESTINATARIOS).`);
+            continue;
+          }
           if (processedIds.has(msg.id)) continue;
           processedIds.add(msg.id);
           if (processedIds.size > 1000) {
@@ -586,7 +628,7 @@ app.get("/revisar-recordatorios", async (req, res) => {
   if (req.query.token !== VERIFY_TOKEN) {
     return res.status(403).send("Token incorrecto.");
   }
-  if (!RECORDATORIOS_ACTIVOS || !AGENDA_ACTIVA) {
+  if (demo.MODO_DEMO || !RECORDATORIOS_ACTIVOS || !AGENDA_ACTIVA) {
     return res.send("Los recordatorios están apagados. Revise RECORDATORIOS_ACTIVOS y AGENDA_ACTIVA en Render.");
   }
   const prudente = recordatorios.horaPrudente();
@@ -613,7 +655,7 @@ app.get("/", (req, res) => res.send("Bot del consultorio: en línea ✅"));
 const RECORDATORIOS_ACTIVOS = String(process.env.RECORDATORIOS_ACTIVOS || "").trim().toLowerCase() === "true";
 
 function iniciarRecordatorios() {
-  if (!RECORDATORIOS_ACTIVOS || !AGENDA_ACTIVA) return;
+  if (demo.MODO_DEMO || !RECORDATORIOS_ACTIVOS || !AGENDA_ACTIVA) return;
   const CADA = 15 * 60 * 1000;
   const correr = () => {
     recordatorios.revisarYEnviar({ sendTemplate, alertTeam })
@@ -632,11 +674,32 @@ const purgaHistorial = setInterval(() => {
 }, 15 * 60 * 1000);
 purgaHistorial.unref();
 
+// Comprueba con Meta que PHONE_NUMBER_ID es un número de prueba (+1 555…).
+// Si no lo es, o no se puede comprobar, el servidor se detiene sin enviar nada.
+async function verificarNumeroDemo() {
+  try {
+    const res = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}?fields=display_phone_number`, {
+      headers: { "Authorization": `Bearer ${WHATSAPP_TOKEN}` }
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && demo.esNumeroDePrueba(data.display_phone_number)) {
+      demoNumeroVerificado = true;
+      console.log(`🧪 MODO DEMO: número de origen verificado como número de prueba (${data.display_phone_number}). Destinatarios permitidos: ${demo.destinatariosPermitidos().length}`);
+      return;
+    }
+    console.error(`⛔ MODO DEMO: PHONE_NUMBER_ID no es un número de prueba o no se pudo comprobar (HTTP ${res.status}). El servidor se detiene.`);
+  } catch (e) {
+    console.error("⛔ MODO DEMO: no se pudo comprobar el número de origen:", e.message);
+  }
+  process.exit(1);
+}
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🩺 Bot del consultorio escuchando en el puerto ${PORT}`);
   console.log(`⚙️  Modelo: ${MODEL} | Agenda: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | Recordatorios: ${RECORDATORIOS_ACTIVOS ? "ACTIVOS ✅" : "INACTIVOS ❌"} | Notas de voz: ${AUDIO_ACTIVO && priv.PERMITIR_DATOS_SENSIBLES_IA ? "ACTIVAS ✅" : "NO SE TRANSCRIBEN 🛡️"} | Datos de salud a la IA: ${priv.PERMITIR_DATOS_SENSIBLES_IA ? "PERMITIDOS ⚠️" : "BLOQUEADOS 🛡️"} | Reseñas: ${recordatorios.RESENAS_ACTIVAS ? "ACTIVAS" : "APAGADAS"}`);
   iniciarRecordatorios();
+  if (demo.MODO_DEMO) verificarNumeroDemo();
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
   if (faltantes.length) console.warn("⚠️ Faltan variables de entorno:", faltantes.join(", "));
