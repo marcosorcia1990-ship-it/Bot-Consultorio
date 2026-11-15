@@ -19,14 +19,21 @@ function destinatariosPermitidos(env = process.env) {
   return String(env.DEMO_DESTINATARIOS || "").split(",").map(ultimos10).filter(x => x.length === 10);
 }
 
+// Todos los calendarios que el servidor usaría: citas, ocupación y estado de chats
+function calendariosConfigurados(env = process.env) {
+  return [env.CALENDAR_ID, env.ESTADO_CALENDAR_ID, ...String(env.CALENDARS_BUSY || "").split(",")]
+    .map(c => String(c || "").trim()).filter(Boolean);
+}
+
 // Revisa la configuración. Devuelve la lista de problemas (vacía = todo bien).
 function validarConfiguracionDemo(env = process.env) {
   const errores = [];
-  const calendarios = [env.CALENDAR_ID, ...String(env.CALENDARS_BUSY || "").split(",")]
-    .map(c => String(c || "").trim()).filter(Boolean);
+  const calendarios = calendariosConfigurados(env);
 
-  if (String(env.AGENDA_ACTIVA || "").trim().toLowerCase() === "true") {
-    if (!env.CALENDAR_ID) errores.push("Falta CALENDAR_ID (calendario de demo).");
+  if (String(env.AGENDA_ACTIVA || "").trim().toLowerCase() === "true" && !env.CALENDAR_ID) {
+    errores.push("Falta CALENDAR_ID (calendario de demo).");
+  }
+  {
     for (const c of calendarios) {
       if (!c.endsWith("@group.calendar.google.com")) {
         errores.push(`El calendario "${c}" no es un calendario secundario de demo (debe terminar en @group.calendar.google.com).`);
@@ -56,4 +63,30 @@ function destinoPermitido(numero, env = process.env) {
   return destinatariosPermitidos(env).includes(ultimos10(numero));
 }
 
-module.exports = { MODO_DEMO, validarConfiguracionDemo, esNumeroDePrueba, destinoPermitido, destinatariosPermitidos };
+// Envuelve el cliente de Google Calendar: cualquier operación sobre un calendario que
+// no esté en la lista permitida se rechaza ANTES de llegar a Google. Es un segundo
+// candado, por si algún día el código usara otro calendario por error.
+function protegerCalendario(cliente, permitidos) {
+  const ok = new Set(permitidos.filter(Boolean));
+  const revisar = (id) => {
+    if (!ok.has(String(id))) {
+      throw new Error(`MODO DEMO: acceso bloqueado a un calendario no autorizado`);
+    }
+  };
+  const envolver = (obj, nombres, extraer) => {
+    const copia = {};
+    for (const n of nombres) {
+      if (typeof obj[n] !== "function") continue;
+      copia[n] = async (params = {}) => { for (const id of extraer(params)) revisar(id); return obj[n](params); };
+    }
+    return copia;
+  };
+  return {
+    events: envolver(cliente.events, ["list", "get", "insert", "patch", "update", "delete"], p => [p.calendarId]),
+    freebusy: envolver(cliente.freebusy || {}, ["query"],
+      p => ((p.requestBody && p.requestBody.items) || []).map(i => i.id))
+  };
+}
+
+module.exports = {
+  protegerCalendario, calendariosConfigurados, MODO_DEMO, validarConfiguracionDemo, esNumeroDePrueba, destinoPermitido, destinatariosPermitidos };

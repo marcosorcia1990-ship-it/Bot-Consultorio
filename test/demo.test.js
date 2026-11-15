@@ -65,7 +65,7 @@ test("destinoPermitido compara los últimos 10 dígitos (521/52)", () => {
 function arrancar(envExtra) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bot-demo-"));
   const MOCK_LOG = path.join(dir, "llamadas.jsonl");
-  const PORT = String(40000 + Math.floor(Math.random() * 1000));
+  const PORT = "0";
   const proc = spawn(process.execPath, ["--import", path.join(__dirname, "mock-fetch.mjs"), "server.js"], {
     cwd: RAIZ,
     env: {
@@ -80,7 +80,10 @@ function arrancar(envExtra) {
   const termino = new Promise(r => proc.on("exit", code => r(code)));
   const llamadas = () => fs.existsSync(MOCK_LOG)
     ? fs.readFileSync(MOCK_LOG, "utf8").trim().split("\n").filter(Boolean).map(leerLinea).filter(Boolean) : [];
-  return { proc, PORT, termino, llamadas, salida: () => salida };
+  return {
+    proc, termino, llamadas, salida: () => salida,
+    get PORT() { const m = salida.match(/escuchando en el puerto (\d+)/); return m ? m[1] : "0"; }
+  };
 }
 
 async function esperar(cond, ms = 5000) {

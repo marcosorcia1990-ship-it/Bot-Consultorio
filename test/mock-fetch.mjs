@@ -25,9 +25,25 @@ globalThis.fetch = async (url, opciones = {}) => {
     registrar({ destino: "whatsapp_envio", cuerpo });
     return respuesta({ messages: [{ id: "wamid.prueba" }] });
   }
+  // API de gestión (WABA): números y apps suscritas
+  if (u.includes("graph.facebook.com") && u.includes("/phone_numbers")) {
+    registrar({ destino: "meta_waba_numeros" });
+    const nums = process.env.MOCK_WABA_NUMS
+      ? JSON.parse(process.env.MOCK_WABA_NUMS)
+      : [{ id: process.env.PHONE_NUMBER_ID || "123", display_phone_number: "+1 555-184-4654", verified_name: "Test Number" }];
+    return respuesta({ data: nums });
+  }
+  if (u.includes("graph.facebook.com") && u.includes("/subscribed_apps")) {
+    const metodo = (opciones.method || "GET").toUpperCase();
+    registrar({ destino: "meta_subscribed_apps", metodo, cuerpo });
+    return metodo === "GET" ? respuesta({ data: [] }) : respuesta({ success: true });
+  }
   if (u.includes("graph.facebook.com") && u.includes("fields=display_phone_number")) {
     registrar({ destino: "whatsapp_consulta_numero" });
-    return respuesta({ display_phone_number: process.env.MOCK_DISPLAY || "+1 555-184-4654", id: "123" });
+    return respuesta({
+      display_phone_number: process.env.MOCK_DISPLAY || "+1 555-184-4654", id: "123",
+      verified_name: "Test Number", webhook_configuration: { application: "https://produccion.ejemplo/webhook" }
+    });
   }
   if (u.includes("graph.facebook.com")) {
     registrar({ destino: "whatsapp_media", url: u });

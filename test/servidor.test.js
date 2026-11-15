@@ -17,7 +17,7 @@ function leerLinea(l) {
 }
 const DIR = fs.mkdtempSync(path.join(os.tmpdir(), "bot-prueba-"));
 const MOCK_LOG = path.join(DIR, "llamadas.jsonl");
-const PUERTO = 39000 + Math.floor(Math.random() * 1000);
+let PUERTO = 0;
 const ALERTAS = "5212710000000";
 
 let servidor;
@@ -82,6 +82,7 @@ before(async () => {
   servidor.stderr.on("data", d => { salida += d; });
   const listo = await esperar(() => salida.includes("escuchando en el puerto"), 8000);
   assert.ok(listo, "el servidor no arrancó:\n" + salida);
+  PUERTO = salida.match(/escuchando en el puerto (\d+)/)[1];
 });
 
 after(() => { if (servidor) servidor.kill(); });

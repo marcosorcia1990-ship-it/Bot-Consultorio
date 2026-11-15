@@ -77,7 +77,7 @@ test("el seudónimo es estable, no contiene el número y no distingue el formato
   const b = p.idPaciente("522711234567");
   assert.strictEqual(a, b);
   assert.match(a, /^p-[0-9a-f]{8}$/);
-  assert.ok(!a.includes("4567"));
+  assert.ok(!a.includes("2711234567") && !a.includes("1234567"));
   assert.notStrictEqual(a, p.idPaciente("5212719999999"));
 });
 

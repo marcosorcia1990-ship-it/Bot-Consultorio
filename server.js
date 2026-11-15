@@ -1,6 +1,7 @@
 // ============================================================
 // Bot de WhatsApp — Consultorio Dr. Marco A. Mixteco
-// Fase 1: respuestas automáticas con IA (Claude) + reglas de silencio
+// Respuestas administrativas con IA, agenda en Google Calendar, recordatorios,
+// filtros de privacidad y silencio automático cuando contesta una persona.
 // ============================================================
 
 const express = require("express");
@@ -11,6 +12,9 @@ const recordatorios = require("./recordatorios");
 const cal = require("./calendar");
 const priv = require("./privacidad");
 const demo = require("./demo");
+const numeros = require("./numeros");
+const { crearEstado } = require("./estado");
+const admin = require("./admin");
 
 // Modo demostración: si la configuración no es segura, el servidor no arranca.
 if (demo.MODO_DEMO) {
@@ -39,7 +43,9 @@ function envioBloqueadoPorDemo(to) {
 const alta = require("./alta");
 
 const app = express();
+app.set("trust proxy", 1);                         // Render está detrás de un proxy HTTPS
 app.use(express.json());
+app.use(express.urlencoded({ extended: false })); // formularios del panel /admin
 
 // ---------- Configuración (variables de entorno en Render) ----------
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;          // Token de acceso de Meta
@@ -66,24 +72,53 @@ const PERSONAL_NUMBERS = (process.env.PERSONAL_NUMBERS || "")
 
 // Número interno para alertas (urgencias / pendientes). Opcional.
 const INTERNAL_ALERT_NUMBER = process.env.INTERNAL_ALERT_NUMBER || "";
+// Plantilla aprobada para avisar al equipo cuando su chat lleva más de 24 h sin
+// actividad (fuera de esa ventana WhatsApp no permite texto libre). Opcional.
+const TPL_AVISO_EQUIPO = process.env.TPL_AVISO_EQUIPO || "";
+const TPL_LANG = process.env.TPL_LANG || "es_MX";
+
+// Interruptor de emergencia: con BOT_PAUSADO=true el bot no contesta a nadie
+// (sigue registrando cuando el equipo toma un chat).
+const BOT_PAUSADO = String(process.env.BOT_PAUSADO || "").trim().toLowerCase() === "true";
+
+// Cuánto calla el bot después de que una persona del equipo escribe en el chat
+const HUMANO_MS = (parseFloat(process.env.HUMANO_HORAS) || 24) * 60 * 60 * 1000;
+
+// Mensajes con más antigüedad que esto no se contestan automáticamente: llegan tarde
+// (por ejemplo, tras una caída o un reinicio) y el equipo pudo haberlos atendido ya.
+const MAX_ANTIGUEDAD_MS = (parseFloat(process.env.MAX_ANTIGUEDAD_MIN) || 15) * 60 * 1000;
+
+// Estado persistente de los chats atendidos por personas (ver estado.js)
+const ESTADO_CALENDAR_ID = process.env.ESTADO_CALENDAR_ID || "";
+let estadoChats = crearEstado(); // en memoria hasta que se conecte el calendario de estado
 
 // ---------- Cerebro del bot ----------
 const SYSTEM_PROMPT = fs.readFileSync(path.join(__dirname, "system-prompt.md"), "utf8");
 
 // ---------- Estado en memoria ----------
-// chats: por cada número → historial de conversación y banderas
+// chats: por cada número → historial temporal de la conversación
 const chats = new Map();
 const processedIds = new Set(); // para no procesar dos veces el mismo mensaje
 
 // La clave son los últimos 10 dígitos: en México el mismo número llega a veces como
 // 521XXXXXXXXXX (mensajes del paciente) y a veces como 52XXXXXXXXXX (ecos de la app).
-// Sin esto, lo que escribe el equipo no silenciaba al bot en ese chat.
 function getChat(numero) {
-  const clave = String(numero).replace(/\D/g, "").slice(-10);
+  const clave = numeros.clave10(numero);
   if (!chats.has(clave)) {
-    chats.set(clave, { history: [], lastActivity: 0, humanUntil: 0 });
+    chats.set(clave, { history: [], lastActivity: 0 });
   }
   return chats.get(clave);
+}
+
+// Cola por chat: los mensajes de un mismo paciente se atienden de uno en uno.
+// Evita respuestas cruzadas y citas duplicadas cuando escribe varios mensajes seguidos.
+const colas = new Map();
+function enCola(clave, tarea) {
+  const anterior = colas.get(clave) || Promise.resolve();
+  const actual = anterior.catch(() => {}).then(tarea);
+  colas.set(clave, actual);
+  actual.catch(() => {}).finally(() => { if (colas.get(clave) === actual) colas.delete(clave); });
+  return actual;
 }
 
 // ---------- Utilidades ----------
@@ -98,15 +133,11 @@ function nowInCordoba() {
   return { fecha, abierto };
 }
 
+// Devuelve { ok, codigo } para que quien llama sepa si el mensaje salió.
 async function sendWhatsAppText(to, body) {
-  if (envioBloqueadoPorDemo(to)) return;
-  // Fix para números mexicanos: WhatsApp entrega el número como 521XXXXXXXXXX
-  // pero la API lo espera como 52XXXXXXXXXX (sin el "1" extra tras la lada 52).
-  // Sin esto, los envíos a México fallan con error 131030.
-  let dest = String(to);
-  if (dest.startsWith("521") && dest.length === 13) {
-    dest = "52" + dest.slice(3);
-  }
+  if (envioBloqueadoPorDemo(to)) return { ok: false, codigo: "demo" };
+  // Números mexicanos: se envía como 52XXXXXXXXXX (ver numeros.js)
+  const dest = numeros.aDestinoWhatsApp(to);
 
   const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
   const res = await fetch(url, {
@@ -123,47 +154,19 @@ async function sendWhatsAppText(to, body) {
     })
   });
   if (!res.ok) {
-    console.error("Error al enviar mensaje:", res.status, priv.sanitizarLog(await res.text()));
-  }
-}
-
-// Envía una plantilla aprobada por Meta (necesaria para iniciar conversación)
-async function sendWhatsAppTemplate(to, plantilla, idioma, componentes = []) {
-  if (envioBloqueadoPorDemo(to)) throw new Error("Envío bloqueado por el modo demo");
-  let dest = String(to).replace(/\D/g, "");
-  if (dest.startsWith("521") && dest.length === 13) dest = "52" + dest.slice(3);
-  if (dest.length === 10) dest = "52" + dest;
-
-  const url = `https://graph.facebook.com/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/messages`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to: dest,
-      type: "template",
-      template: {
-        name: plantilla,
-        language: { code: idioma },
-        components: componentes
-      }
-    })
-  });
-  if (!res.ok) {
     const detalle = await res.text();
-    throw new Error(`No se pudo enviar la plantilla "${plantilla}": ${res.status} ${detalle}`);
+    let codigo = res.status;
+    try { codigo = JSON.parse(detalle).error.code || codigo; } catch {}
+    console.error("Error al enviar mensaje:", res.status, priv.sanitizarLog(detalle));
+    return { ok: false, codigo };
   }
-  return res.json();
+  return { ok: true };
 }
 
 // Envía una plantilla aprobada por Meta (necesaria para mensajes que inicia el negocio)
 async function sendTemplate(to, nombrePlantilla, parametros = [], idioma = "es_MX") {
   if (envioBloqueadoPorDemo(to)) throw new Error("Envío bloqueado por el modo demo");
-  let dest = String(to);
-  if (dest.startsWith("521") && dest.length === 13) dest = "52" + dest.slice(3);
+  const dest = numeros.aDestinoWhatsApp(to);
 
   const componentes = parametros.length
     ? [{ type: "body", parameters: parametros.map(p => ({ type: "text", text: String(p) })) }]
@@ -200,9 +203,18 @@ async function alertTeam(text, motivoLog = "aviso al equipo") {
   console.log(`🔔 Alerta interna: ${motivoLog}`);
   if (!INTERNAL_ALERT_NUMBER) return;
   try {
-    await sendWhatsAppText(INTERNAL_ALERT_NUMBER, `🔔 Aviso del bot:\n${text}`);
+    const r = await sendWhatsAppText(INTERNAL_ALERT_NUMBER, `🔔 Aviso del bot:\n${text}`);
+    if (r.ok) return;
+    // Fuera de la ventana de 24 h WhatsApp no deja enviar texto libre: se usa la plantilla
+    if (TPL_AVISO_EQUIPO) {
+      const parametro = String(text).replace(/\s*\n+\s*/g, " · ").slice(0, 900);
+      await sendTemplate(INTERNAL_ALERT_NUMBER, TPL_AVISO_EQUIPO, [parametro], TPL_LANG);
+      console.log("🔔 Alerta interna enviada con plantilla");
+    } else {
+      console.error("No se pudo enviar la alerta interna y no hay TPL_AVISO_EQUIPO configurada.");
+    }
   } catch (e) {
-    console.error("No se pudo enviar la alerta interna (probablemente fuera de ventana de 24h):", e.message);
+    console.error("No se pudo enviar la alerta interna:", e.message);
   }
 }
 
@@ -390,18 +402,30 @@ async function processMessage(msg, value) {
     return;
   }
 
+  // Mensajes atrasados (llegan tarde tras una caída o reinicio): no se contestan solos
+  const enviadoEn = parseInt(msg.timestamp, 10) * 1000;
+  if (enviadoEn && now - enviadoEn > MAX_ANTIGUEDAD_MS) {
+    console.log(`(silencio) Mensaje atrasado de ${id} (${Math.round((now - enviadoEn) / 60000)} min): lo atiende el equipo`);
+    return;
+  }
+
   // Reinicio de conversación: más de 24 h sin actividad → conversación nueva
   if (now - chat.lastActivity > priv.HISTORIAL_TTL_MS) {
     chat.history = [];
-    chat.humanUntil = 0;
     chat.avisoEnviado = false;
     chat.citaLocalizada = null;
   }
   chat.lastActivity = now;
 
-  // Regla: conversación en manos humanas (la última palabra manda)
-  if (chat.humanUntil > now) {
+  // Regla: conversación en manos humanas (persistente: sobrevive reinicios)
+  if (await estadoChats.enManosHumanas(from)) {
     console.log(`(silencio) Chat en manos humanas: ${id}`);
+    return;
+  }
+
+  // Interruptor de emergencia
+  if (BOT_PAUSADO) {
+    console.log(`(silencio) Bot en pausa (BOT_PAUSADO): ${id}`);
     return;
   }
 
@@ -540,6 +564,11 @@ async function processMessage(msg, value) {
   }
 
   // ---- Responder ----
+  // Si una persona contestó mientras la IA pensaba, la respuesta automática se descarta
+  if (await estadoChats.enManosHumanas(from)) {
+    console.log(`(silencio) El equipo tomó el chat mientras se preparaba la respuesta: ${id}`);
+    return;
+  }
   console.log(`💬 Respuesta de la IA enviada a ${id} (${reply.length} caracteres)`);
   await enviarAlPaciente(chat, from, reply);
   chat.history.push({ role: "user", content: userText }, { role: "assistant", content: reply });
@@ -575,28 +604,35 @@ app.post("/webhook", (req, res) => {
       for (const change of (entry.changes || [])) {
         const value = change.value || {};
 
-        // Ecos de mensajes enviados manualmente desde la app (Coexistence):
-        // si el doctor o Ade escriben, ese chat queda en manos humanas 24 h.
         const echoes = value.message_echoes || value.smb_message_echoes || [];
-        for (const echo of echoes) {
-          const to = echo.to;
-          if (to) {
-            const chat = getChat(to);
-            chat.humanUntil = Date.now() + priv.HISTORIAL_TTL_MS;
-            // También cuenta como actividad: si no, el reinicio por inactividad
-            // (más de 24 h sin mensajes) borraba esta marca y el bot volvía a contestar.
-            chat.lastActivity = Date.now();
-            console.log(`👤 Chat tomado por el equipo: ${priv.idPaciente(to)}`);
-          }
-        }
 
         // Modo demo: solo se procesan eventos del número de prueba configurado.
         // Cualquier otro (por ejemplo, de un número real) se descarta sin leerlo.
-        if (demo.MODO_DEMO && (value.messages || []).length &&
+        if (demo.MODO_DEMO && ((value.messages || []).length || echoes.length) &&
             String(value.metadata && value.metadata.phone_number_id) !== String(PHONE_NUMBER_ID)) {
           console.error("⛔ MODO DEMO: evento de otro número descartado sin procesar.");
           continue;
         }
+
+        // Ecos de mensajes enviados desde la app WhatsApp Business (coexistence):
+        // si el doctor o Ade escriben, el bot calla en ese chat (HUMANO_HORAS, 24 h por omisión).
+        // Se guarda de forma persistente para que sobreviva a reinicios.
+        for (const echo of echoes) {
+          const to = echo.to;
+          if (!to) continue;
+          const desde = (parseInt(echo.timestamp, 10) * 1000) || Date.now();
+          const hasta = desde + HUMANO_MS;
+          if (hasta <= Date.now()) continue; // eco viejo: ya no aplica
+          getChat(to).lastActivity = Date.now();
+          estadoChats.marcarHumano(to, desde, hasta)
+            .catch(e => console.error("No se pudo guardar que el equipo tomó el chat:", e.message));
+          console.log(`👤 Chat tomado por el equipo: ${priv.idPaciente(to)}`);
+        }
+
+        // Sincronización de contactos e historial de la app (coexistence): no se procesa
+        // como mensajes nuevos; el bot nunca contesta mensajes del historial.
+        if (change.field === "history" || value.history) console.log("📚 Historial de la app recibido (no se procesa)");
+        if (change.field === "smb_app_state_sync" || value.state_sync) console.log("📇 Sincronización de contactos recibida (no se procesa)");
 
         // Mensajes entrantes de pacientes
         for (const msg of (value.messages || [])) {
@@ -610,7 +646,8 @@ app.post("/webhook", (req, res) => {
           if (processedIds.size > 1000) {
             processedIds.delete(processedIds.values().next().value);
           }
-          processMessage(msg, value).catch(e => console.error("Error procesando mensaje:", priv.sanitizarLog(e && e.stack, 1000)));
+          enCola(numeros.clave10(msg.from), () => processMessage(msg, value))
+            .catch(e => console.error("Error procesando mensaje:", priv.sanitizarLog(e && e.stack, 1000)));
         }
       }
     }
@@ -619,7 +656,8 @@ app.post("/webhook", (req, res) => {
   }
 });
 
-// Alta del número con coexistencia (se usa una sola vez)
+// Panel de administración y alta del número (Embedded Signup)
+admin.registrarRutas(app);
 alta.registrarRutas(app);
 
 // Revisión manual de recordatorios (para pruebas y diagnóstico).
@@ -666,6 +704,30 @@ function iniciarRecordatorios() {
   console.log("🔔 Recordatorios automáticos ACTIVOS (revisión cada 15 minutos)");
 }
 
+// ---------- Estado persistente de chats atendidos por personas ----------
+async function iniciarEstado() {
+  if (!ESTADO_CALENDAR_ID) {
+    console.warn("⚠️ Sin ESTADO_CALENDAR_ID: el silencio por intervención humana solo vive en memoria (se pierde al reiniciar).");
+    return;
+  }
+  if (!process.env.LOG_SALT) {
+    console.warn("⚠️ Sin LOG_SALT: no se puede identificar el chat entre reinicios; el silencio humano queda solo en memoria.");
+    return;
+  }
+  try {
+    estadoChats = crearEstado({ calendario: cal.initCalendar(), calendarId: ESTADO_CALENDAR_ID, sal: process.env.LOG_SALT });
+    const n = await estadoChats.recuperar();
+    console.log(`💾 Estado persistente activo: ${n} chat(s) en manos del equipo recuperados`);
+    const depurar = setInterval(() => {
+      estadoChats.depurar().then(k => { if (k) console.log(`🧹 ${k} registro(s) de estado vencidos eliminados`); })
+        .catch(e => console.error("No se pudo depurar el estado:", e.message));
+    }, 6 * 60 * 60 * 1000);
+    depurar.unref();
+  } catch (e) {
+    console.error("⚠️ No se pudo activar el estado persistente; queda en memoria:", e.message);
+  }
+}
+
 // ---------- Conservación del historial temporal ----------
 // Cada 15 minutos se borran de memoria las conversaciones con más de 24 h sin actividad.
 const purgaHistorial = setInterval(() => {
@@ -695,11 +757,13 @@ async function verificarNumeroDemo() {
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🩺 Bot del consultorio escuchando en el puerto ${PORT}`);
+const servidor = app.listen(PORT, () => {
+  console.log(`🩺 Bot del consultorio escuchando en el puerto ${servidor.address().port}`);
   console.log(`⚙️  Modelo: ${MODEL} | Agenda: ${AGENDA_ACTIVA ? "ACTIVA ✅" : "INACTIVA ❌"} | Herramientas: ${AGENDA_ACTIVA ? TOOLS.length : 0} | Recordatorios: ${RECORDATORIOS_ACTIVOS ? "ACTIVOS ✅" : "INACTIVOS ❌"} | Notas de voz: ${AUDIO_ACTIVO && priv.PERMITIR_DATOS_SENSIBLES_IA ? "ACTIVAS ✅" : "NO SE TRANSCRIBEN 🛡️"} | Datos de salud a la IA: ${priv.PERMITIR_DATOS_SENSIBLES_IA ? "PERMITIDOS ⚠️" : "BLOQUEADOS 🛡️"} | Reseñas: ${recordatorios.RESENAS_ACTIVAS ? "ACTIVAS" : "APAGADAS"}`);
   iniciarRecordatorios();
+  iniciarEstado();
   if (demo.MODO_DEMO) verificarNumeroDemo();
+  if (BOT_PAUSADO) console.warn("⏸️ BOT_PAUSADO=true: el bot no contestará a nadie.");
   const faltantes = ["WHATSAPP_TOKEN", "VERIFY_TOKEN", "PHONE_NUMBER_ID", "OPENAI_API_KEY"]
     .filter(v => !process.env[v]);
   if (faltantes.length) console.warn("⚠️ Faltan variables de entorno:", faltantes.join(", "));

@@ -68,6 +68,9 @@ function initCalendar() {
   });
 
   calendar = google.calendar({ version: "v3", auth });
+  // Modo demo: solo los calendarios configurados (y validados al arrancar) son accesibles
+  const demo = require("./demo");
+  if (demo.MODO_DEMO) calendar = demo.protegerCalendario(calendar, demo.calendariosConfigurados());
   console.log("📅 Calendario conectado como:", creds.client_email);
   return calendar;
 }
