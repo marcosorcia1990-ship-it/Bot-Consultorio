@@ -174,7 +174,9 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null, sesion
       const dur = 30; // Todas las citas duran 30 minutos
       const r = await cal.crearCita({
         nombre: args.nombre,
-        telefono: args.telefono,
+        // Si la IA no da un teléfono real (p. ej. "[NÚMERO DEL PACIENTE]", visto en la prueba
+        // real del 16 nov 2026), se usa el número de WhatsApp desde el que escribe el paciente.
+        telefono: String(args.telefono || "").replace(/\D/g, "").length >= 10 ? args.telefono : (telefonoPaciente || ""),
         telefonoWa: telefonoPaciente || "",
         tipo: args.tipo,
         primeraVez: args.primera_vez,

@@ -138,3 +138,16 @@ test("un solo calendario de demo: los registros de estado no cuentan como citas 
   const delBot = await cal.citasDelBotAnterioresA(new Date("2027-01-01"));
   assert.ok(!delBot.some(c => c.id === "est1"));
 });
+
+test("crear_cita: un teléfono marcador se reemplaza por el WhatsApp del paciente (prueba real 16 nov 2026)", async () => {
+  const { ejecutarHerramienta } = require("../tools");
+  const original = cal.crearCita;
+  let recibido = null;
+  cal.crearCita = async (datos) => { recibido = datos; return { ok: true, eventId: "x", cuando: "lunes" }; };
+  try {
+    await ejecutarHerramienta("crear_cita", { nombre: "Juan Flores", telefono: "[NÚMERO DEL PACIENTE]", tipo: "consulta", primera_vez: true, start_iso: "2026-11-16T17:00:00Z" }, "5212711111111", {});
+    assert.strictEqual(recibido.telefono, "5212711111111");
+    await ejecutarHerramienta("crear_cita", { nombre: "Juan Flores", telefono: "271 222 3333", tipo: "consulta", primera_vez: true, start_iso: "2026-11-16T17:00:00Z" }, "5212711111111", {});
+    assert.strictEqual(recibido.telefono, "271 222 3333");
+  } finally { cal.crearCita = original; }
+});
