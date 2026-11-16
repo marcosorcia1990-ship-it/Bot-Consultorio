@@ -15,8 +15,11 @@ const meta = require("./meta");
 const demo = require("./demo");
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+// Acceso de SOLO LECTURA para los revisores de Meta: ve el panel, no puede ejecutar
+// acciones ni abrir /alta. Solo se acepta con 20 caracteres o más.
+const REVISOR_TOKEN = (process.env.REVISOR_TOKEN || "").length >= 20 ? process.env.REVISOR_TOKEN : "";
 const SESION_MS = 2 * 60 * 60 * 1000;
-const sesiones = new Map();   // sid -> vence
+const sesiones = new Map();   // sid -> { vence, rol: "admin" | "revisor" }
 const intentos = new Map();   // ip -> { n, desde }
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -27,17 +30,28 @@ function leerCookie(req, nombre) {
   return m ? m[1] : "";
 }
 
-function sesionValida(req) {
+// Devuelve el rol de la sesión ("admin" o "revisor") o null
+function rolSesion(req) {
   const sid = leerCookie(req, "bot_admin");
-  const vence = sid && sesiones.get(sid);
-  if (!vence || vence < Date.now()) { if (sid) sesiones.delete(sid); return false; }
-  return true;
+  const s = sid && sesiones.get(sid);
+  if (!s || s.vence < Date.now()) { if (sid) sesiones.delete(sid); return null; }
+  return s.rol;
 }
 
-// Middleware: exige sesión de administrador
+// Middleware: exige sesión de administrador (acciones y /alta)
 function requiereAdmin(req, res, next) {
   if (!ADMIN_TOKEN) return res.status(503).send("Panel desactivado: falta ADMIN_TOKEN.");
-  if (sesionValida(req)) return next();
+  const rol = rolSesion(req);
+  if (rol === "admin") return next();
+  if (rol === "revisor") return res.status(403).send("Acceso de revisión: solo lectura.");
+  return res.redirect(`/admin/entrar?volver=${encodeURIComponent(req.originalUrl)}`);
+}
+
+// Middleware: administrador o revisor (solo para ver el panel)
+function requiereLectura(req, res, next) {
+  if (!ADMIN_TOKEN) return res.status(503).send("Panel desactivado: falta ADMIN_TOKEN.");
+  const rol = rolSesion(req);
+  if (rol) { req.rolPanel = rol; return next(); }
   return res.redirect(`/admin/entrar?volver=${encodeURIComponent(req.originalUrl)}`);
 }
 
@@ -101,20 +115,25 @@ function registrarRutas(app) {
     const i = intentos.get(ip) || { n: 0, desde: Date.now() };
     if (Date.now() - i.desde > 15 * 60 * 1000) { i.n = 0; i.desde = Date.now(); }
     if (i.n >= 10) return res.status(429).send("Demasiados intentos. Espere 15 minutos.");
-    if (!igualSeguro((req.body && req.body.clave) || "", ADMIN_TOKEN)) {
+    const clave = (req.body && req.body.clave) || "";
+    const rol = igualSeguro(clave, ADMIN_TOKEN) ? "admin"
+      : (REVISOR_TOKEN && igualSeguro(clave, REVISOR_TOKEN)) ? "revisor" : null;
+    if (!rol) {
       i.n++; intentos.set(ip, i);
       return res.status(403).send("Contraseña incorrecta.");
     }
     intentos.delete(ip);
     const sid = crypto.randomBytes(24).toString("hex");
-    sesiones.set(sid, Date.now() + SESION_MS);
+    sesiones.set(sid, { vence: Date.now() + SESION_MS, rol });
+    console.log(`🔑 Panel: sesión iniciada (${rol})`);
     const seguro = req.secure ? "; Secure" : "";
     res.setHeader("Set-Cookie", `bot_admin=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESION_MS / 1000}${seguro}`);
     const volver = String((req.body && req.body.volver) || "/admin/whatsapp");
     res.redirect(volver.startsWith("/admin") || volver.startsWith("/alta") ? volver : "/admin/whatsapp");
   });
 
-  app.get("/admin/whatsapp", requiereAdmin, async (req, res) => {
+  app.get("/admin/whatsapp", requiereLectura, async (req, res) => {
+    const soloLectura = req.rolPanel !== "admin";
     const cfg = datosConfig();
     const diag = await meta.diagnostico(cfg);
     const { checks, seguro } = evaluarAislamiento(diag, cfg);
@@ -128,6 +147,7 @@ function registrarRutas(app) {
     res.type("html").send(pagina("WhatsApp — panel", `
 <h1>Conexión con WhatsApp</h1>${aviso}
 <p>Modo: <b>${demo.MODO_DEMO ? "DEMOSTRACIÓN (número de prueba)" : "normal"}</b></p>
+${soloLectura ? "<p><b>Reviewer access (read-only) / Acceso de revisión (solo lectura).</b></p>" : ""}
 <h2>Número configurado</h2><table>
 ${fila("Número", n.display_phone_number || "—")}${fila("Nombre verificado", n.verified_name || "—")}
 ${fila("Plataforma", n.platform_type || "—")}${fila("Calidad", n.quality_rating || "—")}
@@ -148,14 +168,14 @@ ${apps.map(a => { const d = a.whatsapp_business_api_data || a; return `<tr><td>$
 ${checks.map(c => `<li class="${c.ok ? "ok" : "mal"}">${c.ok ? "✔" : "✘"} ${esc(c.texto)}</li>`).join("")}
 </ul>
 ${diag.errores.length ? `<p class=mal>Errores de Meta:</p><ul>${diag.errores.map(e => `<li>${esc(e)}</li>`).join("")}</ul>` : ""}
-<h2>Acciones</h2>
+${soloLectura ? `<h2>Acciones</h2><p>Las acciones (suscribir / quitar suscripción) solo están disponibles para el administrador. Se muestran en el video de la solicitud.</p>` : `<h2>Acciones</h2>
 <form method="post" action="/admin/whatsapp/suscribir">
 ${demo.MODO_DEMO ? "" : `<label><input type="checkbox" name="confirmar" value="si"> Confirmo que esta cuenta debe enviar sus mensajes a este servidor</label><br>`}
 <button type="submit" ${seguro ? "" : "disabled"}>Suscribir la app a esta cuenta con desvío a este servidor</button>
 ${seguro ? "" : "<br><small>Desactivado: no se cumplen todas las comprobaciones.</small>"}
 </form>
 <form method="post" action="/admin/whatsapp/desuscribir"><button type="submit">Quitar la suscripción de la app a esta cuenta</button></form>
-<p><small>Ninguna de estas acciones cambia la URL general del webhook de la app.</small></p>`));
+<p><small>Ninguna de estas acciones cambia la URL general del webhook de la app.</small></p>`}`));
   });
 
   app.post("/admin/whatsapp/suscribir", requiereAdmin, async (req, res) => {
@@ -190,4 +210,4 @@ ${seguro ? "" : "<br><small>Desactivado: no se cumplen todas las comprobaciones.
   });
 }
 
-module.exports = { registrarRutas, requiereAdmin, evaluarAislamiento, _sesiones: sesiones };
+module.exports = { registrarRutas, requiereAdmin, requiereLectura, evaluarAislamiento, _sesiones: sesiones };

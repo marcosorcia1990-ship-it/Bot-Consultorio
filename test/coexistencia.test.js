@@ -178,3 +178,30 @@ test("fuera de la demo, el bot arranca PAUSADO si no se indica BOT_PAUSADO=false
   assert.ok(await esperar(() => /Bot en pausa/.test(s.salida())));
   assert.strictEqual(openai(s), 0);
 });
+
+test("acceso de revisor: ve el panel en solo lectura, no puede ejecutar acciones ni abrir /alta", async () => {
+  const s = await arrancar({ ADMIN_TOKEN: "clave-admin-larga", REVISOR_TOKEN: "revisor-meta-clave-muy-larga-123",
+    WABA_ID: "1472438634813201", PUBLIC_URL: "https://demo.ejemplo", META_APP_ID: "1", META_APP_SECRET: "x", META_CONFIG_ID: "2" });
+  const r = await fetch(s.url("/admin/entrar"), { method: "POST", redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "clave=revisor-meta-clave-muy-larga-123" });
+  assert.strictEqual(r.status, 302);
+  const cookie = r.headers.get("set-cookie").split(";")[0];
+  const panel = await (await fetch(s.url("/admin/whatsapp"), { headers: { cookie } })).text();
+  assert.match(panel, /solo lectura/);
+  assert.match(panel, /\+1 555-184-4654/);
+  assert.ok(!panel.includes('action="/admin/whatsapp/suscribir"'), "sin botones de acción");
+  for (const ruta of ["/admin/whatsapp/suscribir", "/admin/whatsapp/desuscribir"]) {
+    const x = await fetch(s.url(ruta), { method: "POST", redirect: "manual", headers: { cookie } });
+    assert.strictEqual(x.status, 403);
+  }
+  assert.ok(!s.llamadas().some(l => l.destino === "meta_subscribed_apps" && l.metodo !== "GET"));
+  const alta = await fetch(s.url("/alta"), { redirect: "manual", headers: { cookie } });
+  assert.strictEqual(alta.status, 403);
+});
+
+test("acceso de revisor: una contraseña de revisor corta no se acepta", async () => {
+  const s = await arrancar({ ADMIN_TOKEN: "clave-admin-larga", REVISOR_TOKEN: "corta" });
+  const r = await fetch(s.url("/admin/entrar"), { method: "POST", redirect: "manual",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "clave=corta" });
+  assert.strictEqual(r.status, 403);
+});
