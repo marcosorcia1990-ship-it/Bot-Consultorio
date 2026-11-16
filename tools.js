@@ -45,12 +45,11 @@ const TOOLS = [
         type: "object",
         properties: {
           nombre: { type: "string", description: "Nombre completo del paciente." },
-          telefono: { type: "string", description: "Teléfono de contacto del paciente." },
           tipo: { type: "string", enum: ["consulta", "valoración preoperatoria"], description: "Tipo de cita." },
           primera_vez: { type: "boolean", description: "true si es primera vez, false si es subsecuente. Sirve para el registro de la cita." },
           start_iso: { type: "string", description: "El campo 'start_iso' EXACTO del horario que el paciente eligió (te lo dio buscar_horarios). No lo inventes ni lo modifiques." }
         },
-        required: ["nombre", "telefono", "tipo", "primera_vez", "start_iso"]
+        required: ["nombre", "tipo", "primera_vez", "start_iso"]
       }
     }
   },
@@ -163,6 +162,9 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null, sesion
     }
 
     if (nombre === "crear_cita") {
+      if (!telefonoPaciente) {
+        return JSON.stringify({ ok: false, motivo: "sin_telefono", instruccion_interna: "No se pudo identificar el número de WhatsApp del paciente; no se creó la cita. Dile que en breve le confirmamos por este medio y agrega [AVISAR_EQUIPO]." });
+      }
       // La IA no debe inventar nombres provisionales: en la prueba real se creó una cita a
       // nombre de "[Paciente de seguimiento]" y así salió en el recordatorio y la reseña.
       if (!nombreValido(args.nombre)) {
@@ -174,9 +176,9 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null, sesion
       const dur = 30; // Todas las citas duran 30 minutos
       const r = await cal.crearCita({
         nombre: args.nombre,
-        // Si la IA no da un teléfono real (p. ej. "[NÚMERO DEL PACIENTE]", visto en la prueba
-        // real del 16 nov 2026), se usa el número de WhatsApp desde el que escribe el paciente.
-        telefono: String(args.telefono || "").replace(/\D/g, "").length >= 10 ? args.telefono : (telefonoPaciente || ""),
+        // El teléfono es SIEMPRE el número real del remitente (del webhook de WhatsApp), nunca
+        // uno escrito por la IA: en pruebas reales la IA guardó un marcador y un número inventado.
+        telefono: telefonoPaciente,
         telefonoWa: telefonoPaciente || "",
         tipo: args.tipo,
         primeraVez: args.primera_vez,

@@ -139,15 +139,22 @@ test("un solo calendario de demo: los registros de estado no cuentan como citas 
   assert.ok(!delBot.some(c => c.id === "est1"));
 });
 
-test("crear_cita: un teléfono marcador se reemplaza por el WhatsApp del paciente (prueba real 16 nov 2026)", async () => {
-  const { ejecutarHerramienta } = require("../tools");
+test("crear_cita usa SIEMPRE el número real del remitente, nunca el que escriba la IA", async () => {
+  const { ejecutarHerramienta, TOOLS } = require("../tools");
   const original = cal.crearCita;
   let recibido = null;
   cal.crearCita = async (datos) => { recibido = datos; return { ok: true, eventId: "x", cuando: "lunes" }; };
   try {
-    await ejecutarHerramienta("crear_cita", { nombre: "Juan Flores", telefono: "[NÚMERO DEL PACIENTE]", tipo: "consulta", primera_vez: true, start_iso: "2026-11-16T17:00:00Z" }, "5212711111111", {});
-    assert.strictEqual(recibido.telefono, "5212711111111");
-    await ejecutarHerramienta("crear_cita", { nombre: "Juan Flores", telefono: "271 222 3333", tipo: "consulta", primera_vez: true, start_iso: "2026-11-16T17:00:00Z" }, "5212711111111", {});
-    assert.strictEqual(recibido.telefono, "271 222 3333");
+    for (const inventado of ["[NÚMERO DEL PACIENTE]", "2721161448", undefined]) {
+      await ejecutarHerramienta("crear_cita", { nombre: "José Arcadio Buendia", telefono: inventado, tipo: "consulta", primera_vez: true, start_iso: "2026-11-16T17:00:00Z" }, "5212711111111", {});
+      assert.strictEqual(recibido.telefono, "5212711111111");
+      assert.strictEqual(recibido.telefonoWa, "5212711111111");
+    }
+    recibido = null;
+    const r = JSON.parse(await ejecutarHerramienta("crear_cita", { nombre: "José Arcadio Buendia", tipo: "consulta", primera_vez: true, start_iso: "2026-11-16T17:00:00Z" }, null, {}));
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(recibido, null, "sin remitente no se crea la cita");
   } finally { cal.crearCita = original; }
+  const crear = TOOLS.find(t => t.function.name === "crear_cita").function.parameters;
+  assert.ok(!("telefono" in crear.properties), "la IA ya no recibe un campo de teléfono");
 });
