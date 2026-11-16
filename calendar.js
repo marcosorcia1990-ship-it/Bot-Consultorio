@@ -68,6 +68,9 @@ function initCalendar() {
   });
 
   calendar = google.calendar({ version: "v3", auth });
+  // Modo demo: solo los calendarios configurados (y validados al arrancar) son accesibles
+  const demo = require("./demo");
+  if (demo.MODO_DEMO) calendar = demo.protegerCalendario(calendar, demo.calendariosConfigurados());
   console.log("📅 Calendario conectado como:", creds.client_email);
   return calendar;
 }
@@ -318,6 +321,7 @@ async function listarCitasDelBot(desde, hasta) {
         confirmacionEnviada: priv.confirmacionEnviada === "si",
         recordatorioEnviado: priv.recordatorioEnviado === "si",
         resenaEnviada: priv.resenaEnviada === "si",
+        sinAutomaticos: priv.sinAutomaticos === "si",
         reagendos: parseInt(priv.reagendos || "0", 10) || 0,
         nombre: (priv.nombre || (e.summary || "").replace(/^Consulta – /, "").replace(/\s*\(.*\)$/, "")).trim()
       };
@@ -392,9 +396,11 @@ async function listarTodasLasCitas(desde, hasta) {
         telefonoWa: priv.telefonoWa || "",
         estado: priv.estado || "nueva",
         creadaPorBot,
+        anonimizado: priv.anonimizado === "si",
         nombre: (priv.nombre || nombreDesdeTitulo(e.summary)).trim()
       };
     })
+    .filter(c => !c.anonimizado)                // citas cuyos datos ya se eliminaron (ARCO)
     .filter(c => c.creadaPorBot || c.telefono); // descarta eventos que no son citas de pacientes
 }
 
@@ -458,10 +464,8 @@ async function buscarCitasPorNombre(nombreBuscado) {
   const citas = await listarTodasLasCitas(ahora, hasta);
   const buscado = normalizarNombre(nombreBuscado);
 
-  // Diagnóstico: deja ver en los registros qué hay realmente en el calendario
-  // Diagnóstico breve: cuántas citas se revisaron y una muestra
-  const muestra = citas.slice(0, 5).map(c => `${c.nombre || "(sin nombre)"} ${c.cuando}`).join(" | ");
-  console.log(`🔎 Buscando "${nombreBuscado}" entre ${citas.length} cita(s). Muestra: ${muestra || "(ninguna)"}${citas.length > 5 ? " ..." : ""}`);
+  // Diagnóstico mínimo: solo cuántas citas se revisaron (sin nombres ni fechas)
+  console.log(`🔎 Búsqueda por nombre entre ${citas.length} cita(s)`);
 
   if (buscado.length < 3) return [];
   const palabras = buscado.split(" ").filter(p => p.length > 2);
@@ -579,7 +583,156 @@ async function actualizarEstadoCita(eventId, estado) {
   return { ok: true };
 }
 
+// ============================================================
+// Funciones de privacidad: procedimiento ARCO, baja de mensajes automáticos
+// y conservación. Ver docs/PROCEDIMIENTO-ARCO.md y docs/POLITICA-CONSERVACION.md
+// ============================================================
+
+// Solo para pruebas automáticas: permite usar un calendario simulado.
+function _setCalendarParaPruebas(falso) { calendar = falso; }
+
+// Lista eventos de CALENDAR_ID con paginación (events.list devuelve máximo 250 por página).
+async function listarEventosPaginado({ desde, hasta, filtrosPrivados = [] }) {
+  const cal = initCalendar();
+  const eventos = [];
+  let pageToken;
+  do {
+    const params = {
+      calendarId: CALENDAR_ID,
+      timeMin: desde.toISOString(),
+      timeMax: hasta.toISOString(),
+      singleEvents: true,
+      orderBy: "startTime",
+      maxResults: 250,
+      pageToken
+    };
+    if (filtrosPrivados.length) params.privateExtendedProperty = filtrosPrivados;
+    const { data } = await cal.events.list(params);
+    eventos.push(...(data.items || []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return eventos;
+}
+
+function ultimos10(numero) {
+  return String(numero || "").replace(/\D/g, "").slice(-10);
+}
+
+// ¿El evento pertenece a este teléfono? Compara el número dictado, el de WhatsApp
+// y los teléfonos escritos a mano en el título o la descripción.
+function coincideTelefono(evento, telefono) {
+  const buscado = ultimos10(telefono);
+  if (buscado.length < 10) return false;
+  const priv = (evento.extendedProperties && evento.extendedProperties.private) || {};
+  const candidatos = [
+    priv.telefono, priv.telefonoWa,
+    extraerTelefono(evento.summary), extraerTelefono(evento.description)
+  ].map(ultimos10);
+  return candidatos.includes(buscado);
+}
+
+function resumenEvento(e) {
+  const priv = (e.extendedProperties && e.extendedProperties.private) || {};
+  const inicio = e.start && (e.start.dateTime || e.start.date);
+  return {
+    id: e.id,
+    inicio,
+    cuando: e.start && e.start.dateTime ? etiquetaHora(new Date(e.start.dateTime)) : String(inicio || ""),
+    titulo: e.summary || "",
+    creadaPorBot: priv.creadoPor === BOT_TAG,
+    estado: priv.estado || "",
+    anonimizado: priv.anonimizado === "si"
+  };
+}
+
+// Todos los eventos (pasados y futuros, vigentes y cancelados) asociados a un teléfono.
+async function buscarEventosDePaciente(telefono, desde, hasta) {
+  const eventos = await listarEventosPaginado({ desde, hasta });
+  return eventos.filter(e => coincideTelefono(e, telefono)).map(resumenEvento);
+}
+
+// Construye la versión del evento SIN datos personales. Conserva la fecha, la hora,
+// el color y si ocupa el horario (para no liberar ni empalmar citas por error),
+// y deja constancia del folio de la solicitud.
+function construirEventoAnonimizado(evento, folio, fechaISO = new Date().toISOString()) {
+  const priv = (evento.extendedProperties && evento.extendedProperties.private) || {};
+  const limpio = {
+    summary: `Cita — datos personales eliminados (${folio})`,
+    description: `Datos personales eliminados por la solicitud ${folio} el ${fechaISO.slice(0, 10)}.`,
+    start: evento.start,
+    end: evento.end,
+    colorId: evento.colorId,
+    transparency: evento.transparency,
+    extendedProperties: {
+      private: {
+        ...(priv.creadoPor ? { creadoPor: priv.creadoPor } : {}),
+        estado: priv.estado || "",
+        anonimizado: "si",
+        folio
+      }
+    }
+  };
+  for (const k of Object.keys(limpio)) if (limpio[k] === undefined) delete limpio[k];
+  return limpio;
+}
+
+// Reemplaza el evento completo (events.update) para que no quede ningún campo
+// personal: un "patch" conservaría las propiedades privadas anteriores.
+async function anonimizarEvento(eventId, folio) {
+  const cal = initCalendar();
+  const { data } = await cal.events.get({ calendarId: CALENDAR_ID, eventId });
+  const requestBody = construirEventoAnonimizado(data, folio);
+  await cal.events.update({ calendarId: CALENDAR_ID, eventId, requestBody });
+  return { ok: true };
+}
+
+// Baja de mensajes automáticos: marca las citas del bot de ese teléfono
+// (del último año y del próximo) para que no reciban confirmación, recordatorio
+// ni solicitud de reseña. Devuelve cuántas citas se marcaron (0 = no había dónde guardarlo).
+const VENTANA_PREFERENCIA_MS = 365 * 24 * 60 * 60 * 1000;
+
+async function marcarSinAutomaticos(telefono) {
+  const ahora = Date.now();
+  const eventos = await listarEventosPaginado({
+    desde: new Date(ahora - VENTANA_PREFERENCIA_MS),
+    hasta: new Date(ahora + VENTANA_PREFERENCIA_MS),
+    filtrosPrivados: [`creadoPor=${BOT_TAG}`]
+  });
+  const delPaciente = eventos.filter(e => coincideTelefono(e, telefono));
+  for (const e of delPaciente) await marcarEnCita(e.id, { sinAutomaticos: "si" });
+  return delPaciente.length;
+}
+
+// Teléfonos (últimos 10 dígitos) que pidieron no recibir mensajes automáticos.
+async function telefonosSinAutomaticos() {
+  const ahora = Date.now();
+  const eventos = await listarEventosPaginado({
+    desde: new Date(ahora - VENTANA_PREFERENCIA_MS),
+    hasta: new Date(ahora + VENTANA_PREFERENCIA_MS),
+    filtrosPrivados: [`creadoPor=${BOT_TAG}`, "sinAutomaticos=si"]
+  });
+  const tels = new Set();
+  for (const e of eventos) {
+    const priv = (e.extendedProperties && e.extendedProperties.private) || {};
+    for (const t of [priv.telefono, priv.telefonoWa]) if (ultimos10(t).length === 10) tels.add(ultimos10(t));
+  }
+  return tels;
+}
+
+// Citas creadas por el bot que terminaron antes de `fecha` y aún tienen datos personales.
+async function citasDelBotAnterioresA(fecha) {
+  const eventos = await listarEventosPaginado({
+    desde: new Date("2020-01-01T00:00:00Z"),
+    hasta: fecha,
+    filtrosPrivados: [`creadoPor=${BOT_TAG}`]
+  });
+  return eventos.map(resumenEvento).filter(e => !e.anonimizado);
+}
+
 module.exports = {
+  _setCalendarParaPruebas, listarEventosPaginado, coincideTelefono, buscarEventosDePaciente,
+  construirEventoAnonimizado, anonimizarEvento, marcarSinAutomaticos, telefonosSinAutomaticos,
+  citasDelBotAnterioresA,
   buscarHorarios, crearCita, actualizarEstadoCita, etiquetaHora, initCalendar, textoHorarioAtencion,
   listarCitasDelBot, listarTodasLasCitas, marcarEnCita, buscarCitaPorTelefono, buscarCitasPorTelefono, buscarCitasPorNombre, buscarCitaPorId, cancelarCita, reagendarCita, hayChoque
 };

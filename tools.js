@@ -45,12 +45,11 @@ const TOOLS = [
         type: "object",
         properties: {
           nombre: { type: "string", description: "Nombre completo del paciente." },
-          telefono: { type: "string", description: "Teléfono de contacto del paciente." },
           tipo: { type: "string", enum: ["consulta", "valoración preoperatoria"], description: "Tipo de cita." },
           primera_vez: { type: "boolean", description: "true si es primera vez, false si es subsecuente. Sirve para el registro de la cita." },
           start_iso: { type: "string", description: "El campo 'start_iso' EXACTO del horario que el paciente eligió (te lo dio buscar_horarios). No lo inventes ni lo modifiques." }
         },
-        required: ["nombre", "telefono", "tipo", "primera_vez", "start_iso"]
+        required: ["nombre", "tipo", "primera_vez", "start_iso"]
       }
     }
   },
@@ -119,6 +118,15 @@ const TOOLS = [
   }
 ];
 
+// Nombre aceptable para una cita: al menos nombre y apellido, sin marcadores ni genéricos
+function nombreValido(nombre) {
+  const n = String(nombre || "").trim();
+  if (n.length < 5 || /[\[\]{}<>_]/.test(n) || /\d/.test(n)) return false;
+  if (/\b(paciente|seguimiento|desconocido|nombre|cliente|usuario|sin nombre|n\/a)\b/i.test(n)) return false;
+  const palabras = n.split(/\s+/).filter(p => /\p{L}{2,}/u.test(p));
+  return palabras.length >= 2;
+}
+
 // Ejecuta la herramienta que la IA pidió y devuelve el resultado (string JSON)
 // `sesion` es la conversación en curso: sirve para RECORDAR la cita que se localizó,
 // de modo que si el paciente la busca en un mensaje y la mueve tres mensajes después,
@@ -154,10 +162,23 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null, sesion
     }
 
     if (nombre === "crear_cita") {
+      if (!telefonoPaciente) {
+        return JSON.stringify({ ok: false, motivo: "sin_telefono", instruccion_interna: "No se pudo identificar el número de WhatsApp del paciente; no se creó la cita. Dile que en breve le confirmamos por este medio y agrega [AVISAR_EQUIPO]." });
+      }
+      // La IA no debe inventar nombres provisionales: en la prueba real se creó una cita a
+      // nombre de "[Paciente de seguimiento]" y así salió en el recordatorio y la reseña.
+      if (!nombreValido(args.nombre)) {
+        return JSON.stringify({
+          ok: false, motivo: "nombre_invalido",
+          instruccion_interna: "NO se creó la cita: falta el nombre completo real del paciente. Pídeselo (nombre y apellido) antes de volver a llamar a crear_cita. Nunca uses marcadores ni nombres genéricos."
+        });
+      }
       const dur = 30; // Todas las citas duran 30 minutos
       const r = await cal.crearCita({
         nombre: args.nombre,
-        telefono: args.telefono,
+        // El teléfono es SIEMPRE el número real del remitente (del webhook de WhatsApp), nunca
+        // uno escrito por la IA: en pruebas reales la IA guardó un marcador y un número inventado.
+        telefono: telefonoPaciente,
         telefonoWa: telefonoPaciente || "",
         tipo: args.tipo,
         primeraVez: args.primera_vez,
@@ -310,4 +331,4 @@ async function ejecutarHerramienta(nombre, args, telefonoPaciente = null, sesion
   }
 }
 
-module.exports = { TOOLS, ejecutarHerramienta };
+module.exports = { TOOLS, ejecutarHerramienta, nombreValido };
